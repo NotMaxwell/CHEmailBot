@@ -13,7 +13,13 @@ import { chromium, type Page } from "playwright";
 import { config } from "../config.ts";
 import { getCompany, getTemplate } from "../repo.ts";
 import { render, contextFor, footer } from "../mail/render.ts";
-import { CONTACT_PATHS } from "../scrape/discover.ts";
+/**
+ * Contact pages FIRST, homepage last -- the opposite of discover.ts, which
+ * wants the homepage early because a mailto: there is as good as any other.
+ * For forms the homepage is the worst candidate: a bare <textarea> on it is
+ * usually a newsletter or search box, not a way to reach a human.
+ */
+const FORM_PATHS = ["/contact", "/contact-us", "/contact.html", "/about", "/about-us", ""];
 
 /** Heuristics for locating fields on an unknown contact form. */
 const MESSAGE_SELECTORS = [
@@ -28,16 +34,78 @@ const EMAIL_SELECTORS = [
   "input[type=email]", "input[name*=email i]", "input[placeholder*=email i]",
 ];
 
+/**
+ * Waits for a selector to become visible.
+ * Deliberately NOT locator.isVisible() -- that returns immediately and its
+ * timeout option is ignored, so a form still rendering reads as absent.
+ */
+async function visible(page: Page, selector: string, timeout: number): Promise<boolean> {
+  try {
+    await page.locator(selector).first().waitFor({ state: "visible", timeout });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Fills the first selector that matches a visible field. Returns what it used. */
 async function fillFirst(page: Page, selectors: string[], value: string): Promise<string | null> {
   for (const sel of selectors) {
-    const field = page.locator(sel).first();
+    if (!(await visible(page, sel, 1500))) continue;
     try {
-      if (await field.isVisible({ timeout: 1000 })) {
-        await field.fill(value);
-        return sel;
-      }
-    } catch { /* not present on this page; try the next */ }
+      await page.locator(sel).first().fill(value);
+      return sel;
+    } catch { /* readonly, detached, or covered -- try the next */ }
+  }
+  return null;
+}
+
+/**
+ * Did we find a real contact form, or just something textarea-shaped?
+ * A *named* message field (name/id contains "message"/"comment") is strong
+ * evidence. A bare `textarea` only counts when a name AND email field sit
+ * beside it -- otherwise it is likely a newsletter or search box.
+ */
+export function isConfident(
+  messageField: string | null, nameField: string | null, emailField: string | null,
+): boolean {
+  if (messageField === null) return false;
+  if (messageField !== "textarea") return true;
+  return nameField !== null && emailField !== null;
+}
+
+export interface FillResult {
+  url: string;
+  messageField: string | null;
+  nameField: string | null;
+  emailField: string | null;
+  /** False when the message box matched only the bare `textarea` fallback --
+   *  often a newsletter or search box rather than a real contact form. */
+  confident: boolean;
+}
+
+/**
+ * Finds the company's contact form and fills it. Split out from assist() so it
+ * can be exercised headlessly against real sites without blocking on a human.
+ * Returns null when no form with a message box could be found.
+ */
+export async function findAndFill(
+  page: Page, website: string, message: string,
+  senderName: string, senderEmail: string,
+): Promise<FillResult | null> {
+  for (const path of FORM_PATHS) {
+    let url: string;
+    try { url = new URL(path, website).href; } catch { continue; }
+    try {
+      await page.goto(url, { waitUntil: "domcontentloaded", timeout: 20_000 });
+    } catch { continue; }
+
+    if (!(await visible(page, MESSAGE_SELECTORS.join(", "), 4000))) continue;
+    const messageField = await fillFirst(page, MESSAGE_SELECTORS, message);
+    const nameField = await fillFirst(page, NAME_SELECTORS, senderName);
+    const emailField = await fillFirst(page, EMAIL_SELECTORS, senderEmail);
+    return { url, messageField, nameField, emailField,
+             confident: isConfident(messageField, nameField, emailField) };
   }
   return null;
 }
@@ -61,26 +129,17 @@ export async function assist(companyId: number): Promise<void> {
   const browser = await chromium.launch({ headless: false });   // headed, always
   const page = await browser.newPage();
 
-  let landed: string | null = null;
-  for (const path of CONTACT_PATHS) {
-    const url = new URL(path, company.website).href;
-    try {
-      await page.goto(url, { waitUntil: "domcontentloaded", timeout: 20_000 });
-    } catch { continue; }
-    if (await page.locator(MESSAGE_SELECTORS.join(", ")).first()
-                   .isVisible({ timeout: 2000 }).catch(() => false)) {
-      landed = url;
-      break;
-    }
-  }
+  const filled = await findAndFill(
+    page, company.website, message, config.canSpam.senderName, config.gmail.sender);
 
-  if (!landed) {
+  if (!filled) {
     console.log(`No contact form found on ${company.website}. Browser is open — navigate yourself.`);
   } else {
-    const filled = await fillFirst(page, MESSAGE_SELECTORS, message);
-    await fillFirst(page, NAME_SELECTORS, config.canSpam.senderName);
-    await fillFirst(page, EMAIL_SELECTORS, config.gmail.sender);
-    console.log(`Form found at ${landed} (message field: ${filled ?? "none"})`);
+    console.log(`Form found at ${filled.url} (message field: ${filled.messageField ?? "none"})`);
+    if (!filled.confident) {
+      console.log("  NOTE: matched only a generic textarea — check this is the contact form,");
+      console.log("        not a newsletter or search box, before you submit.");
+    }
   }
 
   console.log(
@@ -90,6 +149,7 @@ export async function assist(companyId: number): Promise<void> {
     `  dedup ledger knows about it.\n`,
   );
 
+  if (!browser.isConnected()) return;                 // already closed while filling
   await new Promise<void>((resolve) => browser.on("disconnected", () => resolve()));
 }
 

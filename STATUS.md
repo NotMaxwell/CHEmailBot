@@ -22,10 +22,21 @@ The test DB was deleted afterwards, so your first run starts clean. A working
 
 ### The one number that matters
 
-Email discovery found **1 address across 4 companies**. Small sample, but if
-that rate holds, website scraping will NOT be your main channel — manual entry
-and form-assist will carry most of the volume. Re-measure after a full scrape
-before investing more in the discovery heuristics.
+Measured on real scraped companies:
+
+| channel | hit rate |
+|---|---|
+| email address found by crawling their site | **1 of 4** |
+| fillable contact form found on their site  | **7 of 8** |
+
+**Form assist is the primary channel, not email.** Plan the workflow around it.
+Both samples are small; re-measure across the full set.
+
+Form detection tries `/contact`, `/contact-us`, `/contact.html`, `/about`,
+`/about-us`, then the homepage LAST — the reverse of discover.ts, because a bare
+`<textarea>` on a homepage is usually a newsletter or search box. Matches that
+rely on the bare-`textarea` fallback are flagged `confident: false` and warn you
+to check before submitting (`isConfident`, tested in `tests/forms.test.ts`).
 
 ## The finding that shaped everything
 
