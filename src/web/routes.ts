@@ -56,6 +56,7 @@ routes.get("/", (c) => {
       cap: budget.cap,
       used: budget.used,
       queued: repo.stats().queued,
+      campaign: currentCampaign(),
     }, c.req.query("err") ?? null),
     repo.stats()));
 });

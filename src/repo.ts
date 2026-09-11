@@ -1,5 +1,5 @@
 // Every query the UI needs, in one place. Routes stay thin.
-import { db, nameKey, isSuppressed } from "./db.ts";
+import { db, nameKey, isSuppressed, currentCampaign } from "./db.ts";
 import type { Company, EmailCandidate } from "./types.ts";
 
 export interface CompanyRow extends Company {
@@ -8,31 +8,44 @@ export interface CompanyRow extends Company {
   primary_verified: number | null;
   send_status: string | null;
   sent_at: string | null;
+  send_channel: string | null;
   template_name: string | null;
 }
 
-/** The review-queue list, with everything the row needs to render. */
-export function listCompanies(filter = "all"): CompanyRow[] {
+/**
+ * The review-queue list, with everything a row needs to render.
+ *
+ * The `sends` join is scoped to the CURRENT CAMPAIGN. Without that, a company
+ * contacted in a past campaign would read as "contacted" forever and never
+ * return to the ready list -- which would defeat the point of campaigns.
+ */
+export function listCompanies(filter = "all", campaign = currentCampaign()): CompanyRow[] {
   const where =
+    // ready to EMAIL: approved, an address verified, not yet contacted this campaign
     filter === "ready"      ? `WHERE c.review_status='approved' AND e.verified=1 AND s.id IS NULL`
+    // ready for FORM ASSIST: approved and has a site, but no usable address
+    : filter === "form"     ? `WHERE c.review_status='approved' AND c.website IS NOT NULL
+                                 AND COALESCE(e.verified,0)=0 AND s.id IS NULL`
     : filter === "contacted" ? `WHERE s.id IS NOT NULL`
     : filter === "new"       ? `WHERE c.review_status='new'`
     : "";
-  return db.query<CompanyRow, []>(`
+  return db.query<CompanyRow, [string]>(`
     SELECT c.*,
            (SELECT COUNT(*) FROM emails WHERE company_id=c.id) AS email_count,
            e.address  AS primary_address,
            e.verified AS primary_verified,
            s.status   AS send_status,
            s.sent_at  AS sent_at,
+           s.channel  AS send_channel,
            t.name     AS template_name
     FROM companies c
     LEFT JOIN emails e   ON e.company_id=c.id AND e.is_primary=1
     LEFT JOIN sends  s   ON s.company_id=c.id AND s.status IN ('queued','sent')
+                        AND s.campaign = ?
     LEFT JOIN templates t ON t.id=c.template_id
     ${where}
     ORDER BY c.name COLLATE NOCASE
-  `).all();
+  `).all(campaign);
 }
 
 export const getCompany = (id: number) =>

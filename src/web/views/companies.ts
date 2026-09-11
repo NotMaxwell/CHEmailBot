@@ -3,11 +3,14 @@ import type { CompanyRow } from "../../repo.ts";
 import type { Company, EmailCandidate } from "../../types.ts";
 
 const FILTERS = [
-  ["all", "All"], ["new", "Unverified"], ["ready", "Ready to send"], ["contacted", "Contacted"],
+  ["all", "All"], ["new", "Unverified"], ["ready", "Ready to email"],
+  ["form", "Needs form assist"], ["contacted", "Contacted"],
 ] as const;
 
 function statusPill(c: CompanyRow): string {
-  if (c.send_status === "sent")   return `<span class="pill ok">sent ${esc((c.sent_at ?? "").slice(0, 10))}</span>`;
+  const via = c.send_channel === "form" ? " via form" : "";
+  if (c.send_status === "sent")
+    return `<span class="pill ok">sent${via} ${esc((c.sent_at ?? "").slice(0, 10))}</span>`;
   if (c.send_status === "queued") return `<span class="pill warn">queued</span>`;
   if (c.review_status === "rejected") return `<span class="pill bad">rejected</span>`;
   if (c.review_status === "approved") return `<span class="pill ok">verified</span>`;
@@ -16,6 +19,7 @@ function statusPill(c: CompanyRow): string {
 
 export interface SendPanel {
   authorized: boolean; dryRun: boolean; cap: number; used: number; queued: number;
+  campaign: string;
 }
 
 const errBanner = (err: string | null) =>
@@ -60,7 +64,8 @@ ${errBanner(err)}
 <div class="row" style="margin:.5rem 0 1rem">
   ${FILTERS.map(([k, label]) =>
     k === filter ? `<b>${label}</b>` : `<a href="/?filter=${k}">${label}</a>`).join(" · ")}
-  <span class="mut">${rows.length} companies</span>
+  <span class="mut">${rows.length} companies · campaign
+    <b>${esc(send.campaign)}</b></span>
 </div>
 
 <table><thead><tr>

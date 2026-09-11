@@ -134,3 +134,41 @@ test("campaign names are trimmed and cannot be blank", () => {
   expect(() => switchCampaign("   ")).toThrow(/cannot be empty/i);
   expect(() => switchCampaign("x".repeat(61))).toThrow(/too long/i);
 });
+
+// --- review queue vs. campaign ---------------------------------------------
+
+test("a form contact lands in Contacted, and leaves the ready lists", () => {
+  const { switchCampaign } = require("../src/db.ts");
+  switchCampaign("queue-view-test");
+  db.query(`INSERT INTO companies (id, chamber_slug, name, name_key, website, review_status, template_id)
+            VALUES (200,'formco','Formco','formco','https://formco.example','approved',1)`).run();
+  db.query(`INSERT INTO emails (company_id,address,source,confidence,is_primary,verified)
+            VALUES (200,'a@formco.example','mailto',1.0,1,1)`).run();
+
+  const inFilter = (f: string) => repo.listCompanies(f).some((r) => r.id === 200);
+  expect(inFilter("ready")).toBe(true);            // verified address, not contacted
+  expect(inFilter("contacted")).toBe(false);
+
+  recordFormSend(200);
+  expect(inFilter("contacted")).toBe(true);        // form contact counts as contacted
+  expect(inFilter("ready")).toBe(false);           // and drops out of ready
+  expect(repo.listCompanies("contacted").find((r) => r.id === 200)!.send_channel).toBe("form");
+});
+
+test("contacted status is per-campaign, so a new campaign re-opens the company", () => {
+  const { switchCampaign } = require("../src/db.ts");
+  switchCampaign("queue-view-test-2");
+  expect(repo.listCompanies("contacted").some((r) => r.id === 200)).toBe(false);
+  expect(repo.listCompanies("ready").some((r) => r.id === 200)).toBe(true);
+});
+
+test("companies with no usable address show up under form assist", () => {
+  const { switchCampaign } = require("../src/db.ts");
+  switchCampaign("form-filter-test");
+  db.query(`INSERT INTO companies (id, chamber_slug, name, name_key, website, review_status)
+            VALUES (201,'noaddr','NoAddr Inc','noaddr','https://noaddr.example','approved')`).run();
+  const formList = repo.listCompanies("form");
+  expect(formList.some((r) => r.id === 201)).toBe(true);   // no email at all
+  expect(formList.some((r) => r.id === 200)).toBe(false);  // has a verified address
+  expect(repo.listCompanies("ready").some((r) => r.id === 201)).toBe(false);
+});
