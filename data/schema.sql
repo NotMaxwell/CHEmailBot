@@ -74,6 +74,9 @@ CREATE TABLE IF NOT EXISTS sends (
   body              TEXT NOT NULL,
   channel           TEXT NOT NULL DEFAULT 'gmail'
                     CHECK (channel IN ('gmail','form')),
+  -- Which outreach this belongs to. Dedup is scoped to this, so a new
+  -- campaign may deliberately re-contact a company a previous one reached.
+  campaign          TEXT NOT NULL DEFAULT 'initial-outreach',
   status            TEXT NOT NULL DEFAULT 'queued'
                     CHECK (status IN ('queued','sent','failed','bounced','skipped')),
   gmail_message_id  TEXT,
@@ -84,16 +87,9 @@ CREATE TABLE IF NOT EXISTS sends (
   sent_at           TEXT
 );
 
--- THE GUARANTEE YOU ASKED FOR ------------------------------------------------
--- Partial unique indexes: a company/address can hold at most one send that is
--- live (queued) or successful (sent). Rows that failed or bounced fall OUT of
--- the index, so a genuine retry is still permitted -- but an accidental
--- second send is rejected by SQLite itself, not by app logic you might later
--- refactor around.
-CREATE UNIQUE INDEX IF NOT EXISTS sends_one_per_company
-  ON sends(company_id) WHERE status IN ('queued','sent');
-CREATE UNIQUE INDEX IF NOT EXISTS sends_one_per_address
-  ON sends(email_address) WHERE status IN ('queued','sent');
+-- THE GUARANTEE YOU ASKED FOR is enforced by partial unique indexes created in
+-- src/db.ts -- they depend on the `campaign` column existing, which for an
+-- older database only happens after ensureColumn() runs. See db.ts.
 CREATE INDEX IF NOT EXISTS sends_status ON sends(status);
 
 -- ---------------------------------------------------------------------------
@@ -125,3 +121,42 @@ INSERT OR IGNORE INTO templates (id, name, subject, body) VALUES (
   'I came across {{company}} in the Huntsville/Madison County Chamber directory and wanted to reach out.'
   ||char(10)||char(10)||'Best,'||char(10)||'{{sender_name}}'
 );
+
+-- ---------------------------------------------------------------------------
+-- tags: free-form marks on a company, surviving across campaigns. Two kinds:
+--   'label'    standing facts   -- 'Partner', 'Repeat donor'
+--   'reminder' things owed them -- 'Send TY letter'
+-- Reminders are what the history page surfaces as an action list.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tags (
+  id         INTEGER PRIMARY KEY,
+  name       TEXT NOT NULL UNIQUE,
+  kind       TEXT NOT NULL DEFAULT 'label' CHECK (kind IN ('label','reminder')),
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS company_tags (
+  company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  tag_id     INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+  note       TEXT,                                   -- optional per-company detail
+  done       INTEGER NOT NULL DEFAULT 0,             -- reminders only: cleared when handled
+  added_at   TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (company_id, tag_id)
+);
+CREATE INDEX IF NOT EXISTS company_tags_tag ON company_tags(tag_id);
+
+-- Starter tags matching the cases you named.
+INSERT OR IGNORE INTO tags (name, kind) VALUES
+  ('Partner', 'label'),
+  ('Repeat donor', 'label'),
+  ('Send TY letter', 'reminder');
+
+-- ---------------------------------------------------------------------------
+-- settings: small key/value store. Holds the current campaign name, so a new
+-- outreach can be started from the UI without touching .env.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS settings (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+INSERT OR IGNORE INTO settings (key, value) VALUES ('current_campaign', 'initial-outreach');

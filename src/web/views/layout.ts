@@ -40,7 +40,7 @@ export const layout = (title: string, body: string, stats?: Record<string, numbe
   .row{display:flex;gap:.75rem;align-items:center;flex-wrap:wrap}
   .banner{background:var(--card);border-left:3px solid var(--accent);padding:.6rem .8rem;margin-bottom:1rem}
 </style></head><body>
-<nav><a href="/">Review queue</a><a href="/templates">Templates</a><a href="/log">Send log</a></nav>
+<nav><a href="/">Review queue</a><a href="/history">Past companies</a><a href="/templates">Templates</a><a href="/log">Send log</a></nav>
 ${stats ? `<ul class="steps">
   <li><span>1 · Scraped</span><b>${stats.companies}</b></li>
   <li><span>2 · Verified co.</span><b>${stats.approved}</b></li>

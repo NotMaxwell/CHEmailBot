@@ -149,3 +149,102 @@ export function stats() {
     queued:    one(`SELECT COUNT(*) n FROM sends WHERE status='queued'`),
   };
 }
+
+// --- tags -------------------------------------------------------------------
+
+export interface Tag { id: number; name: string; kind: "label" | "reminder" }
+export interface CompanyTag extends Tag { note: string | null; done: 0 | 1; added_at: string }
+
+export const listTags = () =>
+  db.query<Tag & { uses: number }, []>(`
+    SELECT t.*, (SELECT COUNT(*) FROM company_tags ct WHERE ct.tag_id = t.id) AS uses
+    FROM tags t ORDER BY t.kind DESC, t.name COLLATE NOCASE`).all();
+
+export const tagsFor = (companyId: number) =>
+  db.query<CompanyTag, [number]>(`
+    SELECT t.id, t.name, t.kind, ct.note, ct.done, ct.added_at
+    FROM company_tags ct JOIN tags t ON t.id = ct.tag_id
+    WHERE ct.company_id = ?
+    ORDER BY t.kind DESC, t.name COLLATE NOCASE`).all(companyId);
+
+/** Creates the tag if it does not exist, then attaches it. Idempotent. */
+export function addTag(
+  companyId: number, name: string, kind: "label" | "reminder" = "label", note?: string,
+): void {
+  const clean = name.trim();
+  if (!clean) throw new Error("Tag name cannot be empty.");
+  db.query(`INSERT OR IGNORE INTO tags (name, kind) VALUES (?, ?)`).run(clean, kind);
+  const tag = db.query<{ id: number }, [string]>(`SELECT id FROM tags WHERE name = ?`).get(clean)!;
+  db.query(
+    `INSERT INTO company_tags (company_id, tag_id, note) VALUES (?, ?, ?)
+     ON CONFLICT(company_id, tag_id) DO UPDATE SET note = COALESCE(excluded.note, note)`,
+  ).run(companyId, tag.id, note?.trim() || null);
+}
+
+export const removeTag = (companyId: number, tagId: number) =>
+  db.query(`DELETE FROM company_tags WHERE company_id = ? AND tag_id = ?`).run(companyId, tagId);
+
+/** Reminders get checked off rather than deleted, so the history stays honest. */
+export const setTagDone = (companyId: number, tagId: number, done: boolean) =>
+  db.query(`UPDATE company_tags SET done = ? WHERE company_id = ? AND tag_id = ?`)
+    .run(done ? 1 : 0, companyId, tagId);
+
+// --- history ----------------------------------------------------------------
+
+/** Field/record separators for the packed tag column (see listHistory). */
+export const REC_SEP = String.fromCharCode(30);
+export const FLD_SEP = String.fromCharCode(31);
+
+export interface HistoryRow {
+  id: number; name: string; city: string | null; website: string | null;
+  campaigns: string; last_contact: string; channels: string; send_count: number;
+  tags: string | null; open_reminders: number;
+}
+
+/** Unpacks the group_concat'd tag column into usable objects. */
+export const unpackTags = (packed: string | null): CompanyTag[] =>
+  !packed ? [] : packed.split(REC_SEP).map((rec) => {
+    const [name, kind, done] = rec.split(FLD_SEP);
+    return {
+      id: 0, name: name ?? "", kind: (kind ?? "label") as "label" | "reminder",
+      note: null, done: (done === "1" ? 1 : 0) as 0 | 1, added_at: "",
+    };
+  });
+
+/**
+ * Every company ever contacted, newest first. Tags are packed by group_concat
+ * rather than fetched per row -- one query instead of N+1.
+ */
+export function listHistory(tagId?: number, campaign?: string): HistoryRow[] {
+  const clauses = ["s.status IN ('queued','sent')"];
+  const params: (number | string)[] = [];
+  if (tagId) {
+    clauses.push(`EXISTS (SELECT 1 FROM company_tags ct WHERE ct.company_id = c.id AND ct.tag_id = ?)`);
+    params.push(tagId);
+  }
+  if (campaign) { clauses.push(`s.campaign = ?`); params.push(campaign); }
+
+  return db.query<HistoryRow, (number | string)[]>(`
+    SELECT c.id, c.name, c.city, c.website,
+           GROUP_CONCAT(DISTINCT s.campaign)     AS campaigns,
+           MAX(COALESCE(s.sent_at, s.queued_at)) AS last_contact,
+           GROUP_CONCAT(DISTINCT s.channel)      AS channels,
+           COUNT(DISTINCT s.id)                  AS send_count,
+           (SELECT GROUP_CONCAT(t.name || char(31) || t.kind || char(31) || ct.done, char(30))
+              FROM company_tags ct JOIN tags t ON t.id = ct.tag_id
+             WHERE ct.company_id = c.id)         AS tags,
+           (SELECT COUNT(*) FROM company_tags ct JOIN tags t ON t.id = ct.tag_id
+             WHERE ct.company_id = c.id AND t.kind = 'reminder' AND ct.done = 0)
+                                                 AS open_reminders
+    FROM companies c JOIN sends s ON s.company_id = c.id
+    WHERE ${clauses.join(" AND ")}
+    GROUP BY c.id
+    ORDER BY last_contact DESC`).all(...params);
+}
+
+/** Distinct campaigns seen in the ledger, newest first. */
+export const listCampaigns = () =>
+  db.query<{ campaign: string; n: number; last: string }, []>(`
+    SELECT campaign, COUNT(*) AS n, MAX(COALESCE(sent_at, queued_at)) AS last
+    FROM sends WHERE status IN ('queued','sent')
+    GROUP BY campaign ORDER BY last DESC`).all();

@@ -1,13 +1,15 @@
 import { Hono } from "hono";
 import { layout, esc } from "./views/layout.ts";
 import { queuePage, companyPage } from "./views/companies.ts";
+import { historyPage, tagSection } from "./views/history.ts";
 import * as repo from "../repo.ts";
-import { db } from "../db.ts";
+import { db, currentCampaign, setSetting } from "../db.ts";
 import { config } from "../config.ts";
 import { syncAll } from "../scrape/chamber.ts";
 import { discoverAll } from "../scrape/discover.ts";
 import { render, contextFor, footer } from "../mail/render.ts";
-import { enqueue, drain, recordFormSend, blockersFor, todayBudget } from "../mail/queue.ts";
+import { enqueue, drain, recordFormSend, blockersFor, todayBudget,
+         priorContactWarning } from "../mail/queue.ts";
 import { authUrl, exchangeCode, isAuthorized } from "../mail/gmail.ts";
 
 export const routes = new Hono();
@@ -90,7 +92,8 @@ routes.get("/company/:id", (c) => {
 
   return c.html(layout(company.name,
     companyPage(company, emails, repo.listTemplates(), preview, sent ?? null,
-                blockers, c.req.query("err") ?? null),
+                blockers, c.req.query("err") ?? null, priorContactWarning(id)) +
+    tagSection(id, repo.tagsFor(id), repo.listTags()),
     repo.stats()));
 });
 
@@ -154,6 +157,49 @@ routes.post("/send/drain", (c) => {
       }));
   } catch (e) { return c.redirect(fail("/", e)); }
   return c.redirect("/");
+});
+
+// --- history & tags ---------------------------------------------------------
+
+routes.get("/history", (c) => {
+  const tag = c.req.query("tag") ? int(c.req.query("tag")) : null;
+  const campaign = c.req.query("campaign") ?? null;
+  return c.html(layout("Past companies",
+    historyPage(
+      repo.listHistory(tag ?? undefined, campaign ?? undefined),
+      repo.listTags(), repo.listCampaigns(), currentCampaign(),
+      tag, campaign, c.req.query("err") ?? null),
+    repo.stats()));
+});
+
+routes.post("/history/campaign", async (c) => {
+  const name = String((await c.req.parseBody())["campaign"] ?? "").trim();
+  if (!name) return c.redirect(fail("/history", new Error("Campaign name cannot be empty.")));
+  setSetting("current_campaign", name);
+  return c.redirect("/history");
+});
+
+routes.post("/company/:id/tag", async (c) => {
+  const id = int(c.req.param("id"));
+  const b = await c.req.parseBody();
+  const back = b["back"] === "history" ? "/history" : `/company/${id}`;
+  try {
+    repo.addTag(id, String(b["name"] ?? ""),
+                b["kind"] === "reminder" ? "reminder" : "label",
+                String(b["note"] ?? ""));
+  } catch (e) { return c.redirect(fail(back, e)); }
+  return c.redirect(back);
+});
+
+routes.post("/company/:id/tag/:tagId/remove", (c) => {
+  repo.removeTag(int(c.req.param("id")), int(c.req.param("tagId")));
+  return c.redirect(`/company/${int(c.req.param("id"))}`);
+});
+
+routes.post("/company/:id/tag/:tagId/done", async (c) => {
+  const done = (await c.req.parseBody())["done"] === "1";
+  repo.setTagDone(int(c.req.param("id")), int(c.req.param("tagId")), done);
+  return c.redirect(`/company/${int(c.req.param("id"))}`);
 });
 
 // --- templates --------------------------------------------------------------

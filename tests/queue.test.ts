@@ -8,16 +8,22 @@ process.env.SENDER_POSTAL_ADDRESS = "1 Test St, Huntsville AL";
 process.env.UNSUBSCRIBE_MAILTO = "unsub@test.example";
 process.env.DRY_RUN = "1";
 
-const { db } = await import("../src/db.ts");
+const { db, setSetting } = await import("../src/db.ts");
 const { enqueue, blockersFor, capForDay } = await import("../src/mail/queue.ts");
+
+// bun test shares one module registry, so src/db.ts is a singleton and this DB
+// is shared with tags.test.ts. Pin our own campaign and ids so the two suites
+// cannot disturb each other whichever order they run in.
+const CAMPAIGN = "queue-test";
+setSetting("current_campaign", CAMPAIGN);
 
 db.query(
   `INSERT INTO companies (id, chamber_slug, name, name_key, website, city, state)
    VALUES (1, 'acme-1', 'Acme Inc', 'acme', 'https://acme.example', 'Huntsville', 'AL')`,
 ).run();
 db.query(
-  `INSERT INTO emails (id, company_id, address, source, confidence, is_primary)
-   VALUES (1, 1, 'hi@acme.example', 'mailto', 1.0, 1)`,
+  `INSERT INTO emails (company_id, address, source, confidence, is_primary)
+   VALUES (1, 'hi@acme.example', 'mailto', 1.0, 1)`,
 ).run();
 
 test("gates block an unreviewed company and name the missing step", () => {
@@ -29,7 +35,7 @@ test("gates block an unreviewed company and name the missing step", () => {
 
 test("clearing steps 2-4 clears every blocker", () => {
   db.query(`UPDATE companies SET review_status='approved', template_id=1 WHERE id=1`).run();
-  db.query(`UPDATE emails SET verified=1 WHERE id=1`).run();
+  db.query(`UPDATE emails SET verified=1 WHERE company_id=1`).run();
   expect(blockersFor(1)).toEqual([]);
 });
 
@@ -57,8 +63,8 @@ test("a second send is refused by the app layer", () => {
 
 test("a second send is refused by SQLite even if app logic is bypassed", () => {
   expect(() =>
-    db.query(`INSERT INTO sends (company_id, email_address, subject, body)
-              VALUES (1, 'other@acme.example', 's', 'b')`).run(),
+    db.query(`INSERT INTO sends (company_id, email_address, subject, body, campaign)
+              VALUES (1, 'other@acme.example', 's', 'b', ?)`).run(CAMPAIGN),
   ).toThrow(/UNIQUE constraint failed/);
 });
 

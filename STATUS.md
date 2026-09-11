@@ -62,21 +62,45 @@ Only `/list/search` is `Disallow`ed — the scraper must never touch it.
 | Form assist never submits | Fills the company's own form, hands you the browser. Keeps a human accountable and sidesteps CAPTCHA |
 | Chamber relay NOT automated | Messages arrive stamped with the Chamber's name; a few hundred trace back to one member. Local-reputation cost, not just legal |
 
-## Dedup guarantee
+## Dedup guarantee — scoped to a campaign
 
-Enforced by SQLite, not app logic (`data/schema.sql`):
+Enforced by SQLite, not app logic. Defined in `src/db.ts` (not schema.sql,
+because the indexes depend on the `campaign` column existing first):
 
 ```sql
-CREATE UNIQUE INDEX sends_one_per_company
-  ON sends(company_id) WHERE status IN ('queued','sent');
-CREATE UNIQUE INDEX sends_one_per_address
-  ON sends(email_address) WHERE status IN ('queued','sent');
+CREATE UNIQUE INDEX sends_one_per_company_campaign
+  ON sends(campaign, company_id) WHERE status IN ('queued','sent');
+CREATE UNIQUE INDEX sends_one_per_address_campaign
+  ON sends(campaign, email_address) WHERE status IN ('queued','sent');
 ```
 
-Partial, so `failed`/`bounced` drop out and genuine retries work — but an
-accidental second send is rejected by the database. `nameKey()` in `src/db.ts`
-normalizes identity so `A-P-T Research, Inc. (APT)` and `APT Research Inc`
-collide (`tests/namekey.test.ts`).
+**Why campaign-scoped.** The original indexes keyed on `company_id` alone, which
+blocked a company from ever being contacted again — that made re-messaging past
+partners about a new event impossible. Scoping to campaign keeps the property
+that matters (no accidental duplicate inside one outreach) while allowing a
+deliberate second contact under a new campaign name. Cross-campaign contact is
+surfaced in the review UI as a visible "Re-contact" banner, never silently.
+
+Partial, so `failed`/`bounced` drop out and genuine retries work. `nameKey()` in
+`src/db.ts` normalizes identity so `A-P-T Research, Inc. (APT)` and
+`APT Research Inc` collide (`tests/namekey.test.ts`).
+
+## Tags and history
+
+`/history` lists every company ever contacted, newest first, filterable by tag
+or campaign. Tags are free-form with two kinds:
+
+- `label` — standing facts: `Partner`, `Repeat donor`
+- `reminder` — things owed: `Send TY letter`. These get checked off rather than
+  deleted, and open ones are counted in a banner at the top of the page.
+
+**Auto-tagging.** A successful send (email or recorded form contact) tags the
+company `Messaged: <campaign>` with the *rendered subject line stored in the
+tag's note*. The subject deliberately does NOT go in the tag name — subjects
+carry `{{company}}`, so that would mint a new single-use tag per company.
+
+Switch campaigns from the top of `/history`; it is stored in the `settings`
+table, so no `.env` edit is needed to start a new outreach.
 
 ## The five-step UI (your requirement), and where each step lives
 

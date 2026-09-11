@@ -91,6 +91,7 @@ export function companyPage(
   contacted: { status: string; sent_at: string | null } | null,
   blockers: string[],
   err: string | null = null,
+  priorWarning: string | null = null,
 ): string {
   const primary = emails.find((e) => e.is_primary === 1);
   return `
@@ -99,6 +100,8 @@ ${errBanner(err)}
    ${c.phone ? " · " + esc(c.phone) : ""}
    ${c.website ? ` · <a href="${esc(c.website)}" target="_blank" rel="noopener">${esc(c.website)}</a>` : ""}</p>
 
+${priorWarning ? `<div class="banner"><b>Re-contact:</b> ${esc(priorWarning)}
+  Allowed — dedup is scoped to the current campaign.</div>` : ""}
 ${contacted ? `<div class="banner"><b>Already ${esc(contacted.status)}</b>
   ${contacted.sent_at ? "on " + esc(contacted.sent_at) : ""} —
   this company is locked against a second send.</div>` : ""}

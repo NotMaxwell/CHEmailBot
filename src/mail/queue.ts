@@ -11,8 +11,8 @@
 // somehow slipped through all five.
 
 import { config, assertSendable } from "../config.ts";
-import { db, isSuppressed, alreadyContacted } from "../db.ts";
-import { getCompany, emailsFor, getTemplate } from "../repo.ts";
+import { db, isSuppressed, alreadyContacted, priorContact, currentCampaign } from "../db.ts";
+import { getCompany, emailsFor, getTemplate, addTag } from "../repo.ts";
 import { render, contextFor, footer } from "./render.ts";
 import { sendMessage } from "./gmail.ts";
 
@@ -65,8 +65,30 @@ export function blockersFor(companyId: number): string[] {
     if (isSuppressed(primary.address)) out.push(`${primary.address} is on the suppression list.`);
   }
   if (!company.template_id) out.push("No template selected (step 4).");
-  if (alreadyContacted(companyId)) out.push("Already queued or sent -- a second send is blocked.");
+  if (alreadyContacted(companyId))
+    out.push(`Already queued or sent in campaign "${currentCampaign()}" -- a second send is blocked.`);
   return out;
+}
+
+/**
+ * Contact in a PREVIOUS campaign. Deliberately not a blocker -- re-messaging a
+ * past company about a new event is the point of campaigns. The review UI shows
+ * it so the decision is informed rather than accidental.
+ */
+export function priorContactWarning(companyId: number): string | null {
+  const prior = priorContact(companyId);
+  return prior
+    ? `Contacted before in "${prior.campaign}"${prior.sent_at ? ` on ${prior.sent_at.slice(0, 10)}` : ""}.`
+    : null;
+}
+
+/** Auto-applied when a message actually goes out, so the history page shows
+ *  what was sent and when without anyone having to tag by hand. The rendered
+ *  subject goes in the note -- putting it in the tag NAME would mint a new
+ *  single-use tag per company, since subjects carry merge fields. */
+function tagAsMessaged(companyId: number, campaign: string, subject: string): void {
+  try { addTag(companyId, `Messaged: ${campaign}`, "label", subject); }
+  catch (err) { console.error(`auto-tag failed for company ${companyId}:`, err); }
 }
 
 /**
@@ -91,13 +113,14 @@ export function enqueue(companyId: number): void {
   try {
     db.query(
       `INSERT INTO sends (company_id, email_address, template_id, subject, body,
-                          channel, status)
-       VALUES (?, ?, ?, ?, ?, 'gmail', 'queued')`,
-    ).run(companyId, primary.address, template.id, subject, body);
+                          channel, status, campaign)
+       VALUES (?, ?, ?, ?, ?, 'gmail', 'queued', ?)`,
+    ).run(companyId, primary.address, template.id, subject, body, currentCampaign());
   } catch (err) {
     // The partial unique index is the real guarantee; translate it for the UI.
     if (String(err).includes("UNIQUE constraint failed")) {
-      throw new Error("Blocked by the dedup index: this company or address already has a live send.");
+      throw new Error(
+        `Blocked by the dedup index: this company or address already has a live send in campaign "${currentCampaign()}".`);
     }
     throw err;
   }
@@ -111,17 +134,20 @@ export function recordFormSend(companyId: number): void {
   if (alreadyContacted(companyId)) throw new Error("Already queued or sent.");
   const template = company.template_id ? getTemplate(company.template_id) : null;
   const ctx = contextFor(company);
+  const subject = template ? render(template.subject, ctx) : "(contact form)";
   db.query(
     `INSERT INTO sends (company_id, email_address, template_id, subject, body,
-                        channel, status, sent_at)
-     VALUES (?, ?, ?, ?, ?, 'form', 'sent', datetime('now'))`,
+                        channel, status, sent_at, campaign)
+     VALUES (?, ?, ?, ?, ?, 'form', 'sent', datetime('now'), ?)`,
   ).run(
     companyId,
     `form:${company.chamber_slug}`,           // no address exists; keep the row unique
     template?.id ?? null,
-    template ? render(template.subject, ctx) : "(contact form)",
+    subject,
     template ? render(template.body, ctx) + footer() : "(submitted via company contact form)",
+    currentCampaign(),
   );
+  tagAsMessaged(companyId, currentCampaign(), subject);
 }
 
 export interface DrainReport {
@@ -131,7 +157,7 @@ export interface DrainReport {
 }
 
 interface QueuedRow { id: number; company_id: number; email_address: string;
-  subject: string; body: string; attempts: number }
+  subject: string; body: string; attempts: number; campaign: string }
 
 /**
  * Drain the queue: one message per jittered interval, stopping at the day's cap.
@@ -150,7 +176,7 @@ export async function drain(
   };
 
   const queued = db.query<QueuedRow, []>(
-    `SELECT id, company_id, email_address, subject, body, attempts
+    `SELECT id, company_id, email_address, subject, body, attempts, campaign
      FROM sends WHERE status = 'queued' ORDER BY queued_at`).all();
 
   for (const row of queued) {
@@ -184,6 +210,7 @@ export async function drain(
          sent_at=datetime('now'), attempts=attempts+1, error=NULL WHERE id=?`,
       ).run(res.messageId, res.threadId, row.id);
       db.query(`UPDATE send_budget SET used = used + 1 WHERE day = ?`).run(budget.day);
+      tagAsMessaged(row.company_id, row.campaign, row.subject);
       report.sent++;
       report.used++;
     } catch (err) {

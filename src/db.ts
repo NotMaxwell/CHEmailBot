@@ -31,18 +31,27 @@ export function isSuppressed(address: string): boolean {
 }
 
 /**
- * Has this company already been contacted (or is one already in flight)?
- * Mirrors the partial unique index in schema.sql -- this is the friendly
- * pre-check for the UI; the index is the actual guarantee.
+ * Has this company already been contacted *in this campaign*?
+ * Mirrors the partial unique index above -- this is the friendly pre-check for
+ * the UI; the index is the actual guarantee.
  */
-export function alreadyContacted(companyId: number): boolean {
+export function alreadyContacted(companyId: number, campaign?: string): boolean {
   const row = db
-    .query<{ n: number }, [number]>(
+    .query<{ n: number }, [number, string]>(
       `SELECT COUNT(*) AS n FROM sends
-       WHERE company_id = ? AND status IN ('queued','sent')`,
+       WHERE company_id = ? AND campaign = ? AND status IN ('queued','sent')`,
     )
-    .get(companyId);
+    .get(companyId, campaign ?? currentCampaign());
   return (row?.n ?? 0) > 0;
+}
+
+/** Contact in any PRIOR campaign. Not a block -- a warning worth seeing. */
+export function priorContact(companyId: number): { campaign: string; sent_at: string | null } | null {
+  return db.query<{ campaign: string; sent_at: string | null }, [number, string]>(
+    `SELECT campaign, sent_at FROM sends
+     WHERE company_id = ? AND campaign <> ? AND status IN ('queued','sent')
+     ORDER BY COALESCE(sent_at, queued_at) DESC LIMIT 1`,
+  ).get(companyId, currentCampaign());
 }
 
 /**
@@ -58,3 +67,43 @@ export function ensureColumn(table: string, column: string, decl: string): void 
 }
 ensureColumn("emails", "verified", "INTEGER NOT NULL DEFAULT 0");
 ensureColumn("companies", "template_id", "INTEGER REFERENCES templates(id)");
+ensureColumn("sends", "campaign", "TEXT NOT NULL DEFAULT 'initial-outreach'");
+
+/**
+ * THE DEDUP GUARANTEE, scoped to a campaign.
+ *
+ * A company (and an address) may hold at most one live or successful send
+ * *within a single campaign*. Rows that failed or bounced fall OUT of the
+ * index, so a genuine retry still works -- but an accidental second send is
+ * rejected by SQLite itself, not by app logic anyone might refactor around.
+ *
+ * Scoping to campaign is what lets you deliberately re-contact a past company
+ * about a new event, while still making a duplicate inside one outreach
+ * impossible. Cross-campaign contact is surfaced as a visible warning in the
+ * review UI instead -- see queue.blockersFor().
+ *
+ * These live here rather than schema.sql because they depend on the `campaign`
+ * column, which on a pre-existing database appears only once the ensureColumn
+ * call above has run.
+ */
+db.exec(`
+  DROP INDEX IF EXISTS sends_one_per_company;
+  DROP INDEX IF EXISTS sends_one_per_address;
+  CREATE UNIQUE INDEX IF NOT EXISTS sends_one_per_company_campaign
+    ON sends(campaign, company_id) WHERE status IN ('queued','sent');
+  CREATE UNIQUE INDEX IF NOT EXISTS sends_one_per_address_campaign
+    ON sends(campaign, email_address) WHERE status IN ('queued','sent');
+`);
+
+export const getSetting = (key: string, fallback = ""): string =>
+  db.query<{ value: string }, [string]>(`SELECT value FROM settings WHERE key = ?`)
+    .get(key)?.value ?? fallback;
+
+export function setSetting(key: string, value: string): void {
+  db.query(`INSERT INTO settings (key, value) VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(key, value);
+}
+
+/** The campaign new sends are filed under. */
+export const currentCampaign = (): string =>
+  getSetting("current_campaign", "initial-outreach");
