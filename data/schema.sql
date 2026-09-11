@@ -152,6 +152,18 @@ INSERT OR IGNORE INTO tags (name, kind) VALUES
   ('Send TY letter', 'reminder');
 
 -- ---------------------------------------------------------------------------
+-- campaigns: a named outreach. First-class rather than an implied string on
+-- sends, so a campaign you have created but not yet sent under still exists
+-- and still appears in the picker.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS campaigns (
+  id         INTEGER PRIMARY KEY,
+  name       TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+INSERT OR IGNORE INTO campaigns (name) VALUES ('initial-outreach');
+
+-- ---------------------------------------------------------------------------
 -- settings: small key/value store. Holds the current campaign name, so a new
 -- outreach can be started from the UI without touching .env.
 -- ---------------------------------------------------------------------------

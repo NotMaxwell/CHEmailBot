@@ -95,6 +95,10 @@ db.exec(`
     ON sends(campaign, email_address) WHERE status IN ('queued','sent');
 `);
 
+// Backfill: campaign names that only ever existed as strings on sends rows
+// (written before the campaigns table existed) become real rows.
+db.exec(`INSERT OR IGNORE INTO campaigns (name) SELECT DISTINCT campaign FROM sends`);
+
 export const getSetting = (key: string, fallback = ""): string =>
   db.query<{ value: string }, [string]>(`SELECT value FROM settings WHERE key = ?`)
     .get(key)?.value ?? fallback;
@@ -107,3 +111,13 @@ export function setSetting(key: string, value: string): void {
 /** The campaign new sends are filed under. */
 export const currentCampaign = (): string =>
   getSetting("current_campaign", "initial-outreach");
+
+/** Creates a campaign if new, then makes it current. Returns the clean name. */
+export function switchCampaign(name: string): string {
+  const clean = name.trim();
+  if (!clean) throw new Error("Campaign name cannot be empty.");
+  if (clean.length > 60) throw new Error("Campaign name is too long (60 characters max).");
+  db.query(`INSERT OR IGNORE INTO campaigns (name) VALUES (?)`).run(clean);
+  setSetting("current_campaign", clean);
+  return clean;
+}

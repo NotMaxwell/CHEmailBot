@@ -11,7 +11,7 @@ const tagChip = (t: CompanyTag) => {
 export function historyPage(
   rows: HistoryRow[],
   tags: (Tag & { uses: number })[],
-  campaigns: { campaign: string; n: number; last: string }[],
+  campaigns: { campaign: string; n: number; last: string | null }[],
   current: string,
   activeTag: number | null,
   activeCampaign: string | null,
@@ -26,12 +26,21 @@ ${err ? `<div class="banner" style="border-left-color:var(--bad)"><b>${esc(err)}
   <div class="row">
     <b>Current campaign</b>
     <form method="post" action="/history/campaign" class="row" style="gap:.4rem">
-      <input type="text" name="campaign" value="${esc(current)}" required>
+      <select name="campaign">
+        ${campaigns.map((c) => `<option value="${esc(c.campaign)}" ${
+          c.campaign === current ? "selected" : ""}>${esc(c.campaign)}${
+          c.n ? ` (${c.n} sent)` : " (unused)"}</option>`).join("")}
+      </select>
       <button>Switch</button>
     </form>
-    <span class="mut">New sends file under this name. Dedup is scoped to it, so
-      switching lets you deliberately re-message past companies.</span>
+    <form method="post" action="/history/campaign" class="row" style="gap:.4rem">
+      <input type="text" name="new_campaign" placeholder="new campaign name" maxlength="60">
+      <button>Create &amp; switch</button>
+    </form>
   </div>
+  <p class="mut" style="margin:.6rem 0 0">New sends file under the current campaign.
+    Dedup is scoped to it, so switching is what lets you deliberately re-message a
+    company a previous campaign already reached.</p>
 </div>
 
 ${openReminders ? `<div class="banner"><b>${openReminders} open reminder${
@@ -39,7 +48,7 @@ ${openReminders ? `<div class="banner"><b>${openReminders} open reminder${
 
 <div class="row" style="margin:.5rem 0 1rem">
   ${activeTag || activeCampaign ? `<a href="/history">All</a>` : `<b>All</b>`}
-  ${campaigns.map((c) =>
+  ${campaigns.filter((c) => c.n).map((c) =>
     c.campaign === activeCampaign
       ? `<b>${esc(c.campaign)} (${c.n})</b>`
       : `<a href="/history?campaign=${encodeURIComponent(c.campaign)}">${esc(c.campaign)} (${c.n})</a>`,

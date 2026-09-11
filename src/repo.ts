@@ -242,9 +242,16 @@ export function listHistory(tagId?: number, campaign?: string): HistoryRow[] {
     ORDER BY last_contact DESC`).all(...params);
 }
 
-/** Distinct campaigns seen in the ledger, newest first. */
+/**
+ * Every campaign, newest first -- including ones created but not yet sent
+ * under, which is why this reads from `campaigns` rather than from `sends`.
+ */
 export const listCampaigns = () =>
-  db.query<{ campaign: string; n: number; last: string }, []>(`
-    SELECT campaign, COUNT(*) AS n, MAX(COALESCE(sent_at, queued_at)) AS last
-    FROM sends WHERE status IN ('queued','sent')
-    GROUP BY campaign ORDER BY last DESC`).all();
+  db.query<{ campaign: string; n: number; last: string | null }, []>(`
+    SELECT c.name AS campaign,
+           (SELECT COUNT(*) FROM sends s
+             WHERE s.campaign = c.name AND s.status IN ('queued','sent')) AS n,
+           (SELECT MAX(COALESCE(s.sent_at, s.queued_at)) FROM sends s
+             WHERE s.campaign = c.name) AS last
+    FROM campaigns c
+    ORDER BY c.created_at DESC, c.id DESC`).all();

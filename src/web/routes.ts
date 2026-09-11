@@ -3,7 +3,7 @@ import { layout, esc } from "./views/layout.ts";
 import { queuePage, companyPage } from "./views/companies.ts";
 import { historyPage, tagSection } from "./views/history.ts";
 import * as repo from "../repo.ts";
-import { db, currentCampaign, setSetting } from "../db.ts";
+import { db, currentCampaign, switchCampaign } from "../db.ts";
 import { config } from "../config.ts";
 import { syncAll } from "../scrape/chamber.ts";
 import { discoverAll } from "../scrape/discover.ts";
@@ -173,9 +173,11 @@ routes.get("/history", (c) => {
 });
 
 routes.post("/history/campaign", async (c) => {
-  const name = String((await c.req.parseBody())["campaign"] ?? "").trim();
-  if (!name) return c.redirect(fail("/history", new Error("Campaign name cannot be empty.")));
-  setSetting("current_campaign", name);
+  const b = await c.req.parseBody();
+  // Two submit paths land here: the picker, and the create-new field.
+  const name = String(b["new_campaign"] ?? "").trim() || String(b["campaign"] ?? "");
+  try { switchCampaign(name); }
+  catch (e) { return c.redirect(fail("/history", e)); }
   return c.redirect("/history");
 });
 

@@ -108,3 +108,29 @@ test("open reminders are counted for the history banner", () => {
   repo.addTag(CO, "Call about sponsorship", "reminder");
   expect(mine().open_reminders).toBe(1);
 });
+
+// --- campaign lifecycle -----------------------------------------------------
+
+test("a created-but-unused campaign still appears in the picker", () => {
+  const { switchCampaign } = require("../src/db.ts");
+  switchCampaign("spring-2028-appeal");                  // created, nothing sent
+  const names = repo.listCampaigns().map((c) => c.campaign);
+  expect(names).toContain("spring-2028-appeal");
+  expect(repo.listCampaigns().find((c) => c.campaign === "spring-2028-appeal")!.n).toBe(0);
+});
+
+test("switching to an existing campaign does not duplicate it", () => {
+  const { switchCampaign, currentCampaign } = require("../src/db.ts");
+  switchCampaign("spring-2028-appeal");
+  const hits = repo.listCampaigns().filter((c) => c.campaign === "spring-2028-appeal");
+  expect(hits).toHaveLength(1);
+  expect(currentCampaign()).toBe("spring-2028-appeal");
+});
+
+test("campaign names are trimmed and cannot be blank", () => {
+  const { switchCampaign, currentCampaign } = require("../src/db.ts");
+  switchCampaign("  padded-name  ");
+  expect(currentCampaign()).toBe("padded-name");
+  expect(() => switchCampaign("   ")).toThrow(/cannot be empty/i);
+  expect(() => switchCampaign("x".repeat(61))).toThrow(/too long/i);
+});
