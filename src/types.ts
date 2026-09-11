@@ -11,6 +11,8 @@ export interface Company {
   postal_code: string | null;
   linkedin: string | null;
   category: string | null;
+  /** Template chosen in the review UI (step 4). */
+  template_id: number | null;
   review_status: "new" | "approved" | "rejected";
   scraped_at: string;
 }
@@ -22,6 +24,8 @@ export interface EmailCandidate {
   source: "mailto" | "contact_page" | "manual" | "pattern";
   confidence: number;
   is_primary: 0 | 1;
+  /** A human confirmed this address is correct (step 3). */
+  verified: 0 | 1;
 }
 
 export type SendStatus = "queued" | "sent" | "failed" | "bounced" | "skipped";

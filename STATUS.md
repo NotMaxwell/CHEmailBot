@@ -4,15 +4,28 @@ _Last updated: 2026-09-11. Written so work can resume cold, with no network._
 
 ## Where this stands
 
-The scaffold is complete, the Chamber scraper and email-discovery pipeline are
-**implemented**, and the five-step review UI is **implemented**. Nothing has
-been executed yet — Bun is not installed on this machine, so no dependency has
-ever been fetched and no code path has run end to end.
+**Everything is implemented and verified end to end except the live Gmail
+send**, which needs OAuth credentials you have to create.
 
-What *has* been verified: the HTML extraction logic in `src/scrape/parse.ts`
-passes 17 checks against real Chamber HTML (saved in `tests/fixtures/`), run
-offline through Node with the type annotations stripped. That's the riskiest
-component and it is known-good.
+Proven by running it (Bun 1.4.0, `bun test` → 19 pass, `bunx tsc --noEmit` clean):
+
+- scraped 4 real listings from `computers-it-web-1439` into the DB
+- ran discovery against those companies' own sites → 1 address found
+- drove all five review steps over HTTP; the send button ungated correctly
+- queued a send, then **failed to double-send it at both layers** — the app
+  refused it, and a direct SQL INSERT bypassing all app logic was rejected by
+  `UNIQUE constraint failed: sends.company_id`
+- dry-run drain reported what it would send and left the row queued
+
+The test DB was deleted afterwards, so your first run starts clean. A working
+`.env` is in place (gitignored) with `DRY_RUN=1`.
+
+### The one number that matters
+
+Email discovery found **1 address across 4 companies**. Small sample, but if
+that rate holds, website scraping will NOT be your main channel — manual entry
+and form-assist will carry most of the volume. Re-measure after a full scrape
+before investing more in the discovery heuristics.
 
 ## The finding that shaped everything
 
@@ -80,24 +93,21 @@ every gate clears. `/` shows a pipeline counter strip for all five stages.
 
 ## Next steps, in order
 
-1. **`bun install`** — needs network. Then `bun test` (should pass; the logic is
-   already verified, but it has never run under Bun).
-2. **`bun run dev`**, click "Start Chamber scrape." First real execution of
-   `syncAll()`. Watch for: listings with no website, PO-box addresses, and
-   `upsertCompany` returning `"duplicate"` a lot — that would mean `nameKey()`
-   is over-collapsing distinct companies.
-3. **Check the null-website rate.** That number decides whether website-scraping
-   or form-assist carries most of your volume. It's the main unknown left.
-4. **`POST /company/:id/queue` is a stub** — it redirects without enqueueing.
-   Wire it to `mail/queue.enqueue()`.
-5. **`src/mail/gmail.ts` is a stub.** Needs an OAuth desktop client from
-   console.cloud.google.com, scope `gmail.send` (send-only — it cannot read your
-   inbox), token persisted to `.gmail-token.json`, bootstrap via the two
-   `/oauth/*` routes.
-6. **`src/mail/queue.ts` `drain()` is a stub.** Five gates are specified in the
-   file header; the ramp and jitter helpers are already written.
-7. **`src/forms/assist.ts` is a stub.** Playwright, headed, never submits.
-   Note: `playwright` also downloads browser binaries — a large fetch.
+1. **Fill in CAN-SPAM fields in `.env`.** `SENDER_POSTAL_ADDRESS` currently holds
+   a placeholder; it must be a real mailing address to be lawful.
+2. **Create the Gmail OAuth client** at console.cloud.google.com — desktop app,
+   scope `gmail.send` (send-only; it cannot read your inbox). Put the id/secret
+   in `.env`, then click "connect Gmail" on `/`. Token lands in
+   `.gmail-token.json` (gitignored). This is the only unexercised code path.
+3. **`bun run dev`, click "Start Chamber scrape."** ~300–400 companies at a 2s
+   delay — roughly 20–30 minutes. Watch for `upsertCompany` returning
+   `"duplicate"` often, which would mean `nameKey()` over-collapses distinct
+   companies.
+4. **Re-measure the discovery yield** (see above) once you have the full set.
+5. **`bunx playwright install chromium`** before first using form assist —
+   ~150MB, deferred until you actually need it.
+6. **Send one real message to yourself first.** Set `DRY_RUN=0`, queue a company
+   whose address you control, drain, and read what actually lands.
 
 ## Before any real send
 

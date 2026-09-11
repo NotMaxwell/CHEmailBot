@@ -126,7 +126,7 @@ export function buildRaw(to: string, subject: string, body: string): string {
       ? [`List-Unsubscribe: <mailto:${config.canSpam.unsubscribeMailto}>`] : []),
   ];
   // base64 bodies must be wrapped at 76 chars per RFC 2045.
-  const encoded = b64(body).replace(/(.{76})/g, "$1\r\n");
+  const encoded = b64(body).replace(/(.{76})/g, "$1\r\n").trimEnd();
   return `${headers.join("\r\n")}\r\n\r\n${encoded}`;
 }
 
