@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS companies (
   postal_code   TEXT,
   linkedin      TEXT,
   category      TEXT,                   -- chamber category slug it was found under
+  template_id   INTEGER REFERENCES templates(id),  -- chosen in the review UI
   review_status TEXT NOT NULL DEFAULT 'new'
                 CHECK (review_status IN ('new','approved','rejected')),
   scraped_at    TEXT NOT NULL DEFAULT (datetime('now'))
@@ -37,7 +38,8 @@ CREATE TABLE IF NOT EXISTS emails (
   source        TEXT NOT NULL
                 CHECK (source IN ('mailto','contact_page','manual','pattern')),
   confidence    REAL NOT NULL DEFAULT 0.5,
-  is_primary    INTEGER NOT NULL DEFAULT 0,
+  is_primary    INTEGER NOT NULL DEFAULT 0,   -- the address the send will use
+  verified      INTEGER NOT NULL DEFAULT 0,   -- a human confirmed it is correct
   discovered_at TEXT NOT NULL DEFAULT (datetime('now')),
   UNIQUE (company_id, address)
 );
@@ -114,4 +116,12 @@ CREATE TABLE IF NOT EXISTS send_budget (
   day        TEXT PRIMARY KEY,        -- 'YYYY-MM-DD'
   cap        INTEGER NOT NULL,
   used       INTEGER NOT NULL DEFAULT 0
+);
+
+-- A default template so the UI has something selectable on first boot.
+INSERT OR IGNORE INTO templates (id, name, subject, body) VALUES (
+  1, 'Default outreach', 'Quick question about {{company}}',
+  'Hi {{company}} team,'||char(10)||char(10)||
+  'I came across {{company}} in the Huntsville/Madison County Chamber directory and wanted to reach out.'
+  ||char(10)||char(10)||'Best,'||char(10)||'{{sender_name}}'
 );

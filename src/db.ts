@@ -44,3 +44,17 @@ export function alreadyContacted(companyId: number): boolean {
     .get(companyId);
   return (row?.n ?? 0) > 0;
 }
+
+/**
+ * Adds a column if the table lacks it. schema.sql uses CREATE TABLE IF NOT
+ * EXISTS, which silently ignores new columns on an existing database -- this
+ * closes that gap so an older .db file still picks up schema additions.
+ */
+export function ensureColumn(table: string, column: string, decl: string): void {
+  const cols = db.query<{ name: string }, []>(`PRAGMA table_info(${table})`).all();
+  if (!cols.some((c) => c.name === column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${decl}`);
+  }
+}
+ensureColumn("emails", "verified", "INTEGER NOT NULL DEFAULT 0");
+ensureColumn("companies", "template_id", "INTEGER REFERENCES templates(id)");

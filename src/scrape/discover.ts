@@ -1,18 +1,88 @@
 // Stage 2: resolve a real email address from each company's OWN website.
-// This is the stage that replaces the emails the Chamber refuses to publish.
+// This replaces the addresses the Chamber refuses to publish.
 //
-// Strategy, highest confidence first:
-//   1.0  mailto: link on the homepage or a contact page
-//   0.8  bare address in the text of /contact, /contact-us, /about
-//   0.4  role-address guess (info@domain) -- NEVER auto-sent, review required
-//
-// Anything below 0.8 must be human-approved in the review queue before it can
-// be queued for send.
-export const CONTACT_PATHS = ["/contact", "/contact-us", "/about", "/about-us", "/team"];
+// Confidence, highest first:
+//   1.0  mailto: link
+//   0.8  bare address in page text
+// Anything below 1.0 still requires human verification in the review UI
+// before it can be queued -- see repo.setVerified.
 
-/** TODO: crawl homepage + CONTACT_PATHS, collect mailto: and text matches. */
-export async function discoverFor(_companyId: number): Promise<void> {
-  throw new Error("not implemented");
+import { config } from "../config.ts";
+import { harvestEmails } from "./parse.ts";
+import { recordEmails, getCompany } from "../repo.ts";
+import { db } from "../db.ts";
+
+export const CONTACT_PATHS = ["", "/contact", "/contact-us", "/about", "/about-us"];
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+async function tryFetch(url: string): Promise<string | null> {
+  try {
+    const res = await fetch(url, {
+      headers: { "User-Agent": config.scrape.userAgent },
+      signal: AbortSignal.timeout(15_000),
+      redirect: "follow",
+    });
+    if (!res.ok) return null;
+    const type = res.headers.get("content-type") ?? "";
+    return type.includes("html") ? await res.text() : null;
+  } catch {
+    return null;               // dead domain, TLS failure, timeout -- all fine
+  }
 }
 
-if (import.meta.main) throw new Error("not implemented");
+/** Crawl one company's site and store whatever addresses turn up. */
+export async function discoverFor(companyId: number): Promise<number> {
+  const company = getCompany(companyId);
+  if (!company?.website) return 0;
+
+  let base: URL;
+  try { base = new URL(company.website); } catch { return 0; }
+
+  const found = new Map<string, { address: string; source: string; confidence: number }>();
+  for (const path of CONTACT_PATHS) {
+    const html = await tryFetch(new URL(path, base).href);
+    await sleep(config.scrape.delayMs);
+    if (!html) continue;
+    for (const e of harvestEmails(html)) {
+      const prev = found.get(e.address);
+      if (!prev || e.confidence > prev.confidence) found.set(e.address, e);
+    }
+    // a mailto: on the homepage is good enough; stop hammering the site
+    if ([...found.values()].some((e) => e.confidence === 1.0)) break;
+  }
+
+  const list = [...found.values()];
+  recordEmails(companyId, list);
+  return list.length;
+}
+
+export interface DiscoverProgress { done: number; total: number; found: number }
+
+/** Run discovery for every approved company that has no address yet. */
+export async function discoverAll(
+  onProgress?: (p: DiscoverProgress) => void,
+): Promise<DiscoverProgress> {
+  const targets = db.query<{ id: number }, []>(`
+    SELECT c.id FROM companies c
+    WHERE c.website IS NOT NULL
+      AND c.review_status <> 'rejected'
+      AND NOT EXISTS (SELECT 1 FROM emails e WHERE e.company_id = c.id)
+    ORDER BY c.name COLLATE NOCASE
+  `).all();
+
+  const p: DiscoverProgress = { done: 0, total: targets.length, found: 0 };
+  onProgress?.(p);
+  for (const t of targets) {
+    p.found += await discoverFor(t.id);
+    p.done++;
+    onProgress?.(p);
+  }
+  return p;
+}
+
+if (import.meta.main) {
+  const p = await discoverAll((x) =>
+    process.stdout.write(`\r${x.done}/${x.total} (${x.found} addresses)   `));
+  console.log("\n", p);
+}
