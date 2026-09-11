@@ -72,8 +72,50 @@ export function parseMember(html: string): ParsedMember {
 
 const ADDR = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
 
-/** Addresses that are never a real human contact. */
-const JUNK = /(^|@)(sentry|wixpress|example|sentry\.io|godaddy|squarespace|\d+x\d+)|\.(png|jpe?g|gif|svg|webp|css|js)$/i;
+/** Domains that are never a human contact: telemetry, CDNs, vendor boilerplate. */
+const JUNK_DOMAIN =
+  /(sentry\.io|\.ingest\.|wixpress|squarespace|godaddy|cloudflare|googleapis|gstatic|jquery|w3\.org|schema\.org|doubleclick|sentry|^test\.)/i;
+
+/** Placeholder domains used in form examples -- never a real recipient. */
+const PLACEHOLDER_DOMAIN =
+  /^(example|domain|yourdomain|yourcompany|company|email|youremail|mydomain|mysite|website|site|abc|xyz)\.(com|org|net|co)$/i;
+
+/** Local parts that are machine keys rather than names (e.g. Sentry DSNs). */
+const JUNK_LOCAL = /^[0-9a-f]{16,}$/i;
+
+export function isJunkAddress(address: string): boolean {
+  const [local = "", domain = ""] = address.split("@");
+  if (/\.(png|jpe?g|gif|svg|webp|css|js|woff2?|ico)$/i.test(address)) return true;
+  if (JUNK_DOMAIN.test(domain) || PLACEHOLDER_DOMAIN.test(domain)) return true;
+  if (JUNK_LOCAL.test(local)) return true;
+  if (/\d+x\d+/.test(local)) return true;                 // image dimensions
+  return false;
+}
+
+/**
+ * Does this address plausibly belong to the company whose site we crawled?
+ *
+ * Exact host matching is too strict -- federal.octave.com legitimately uses
+ * info@octavefederal.com, and ingentis.com uses mail@ingentis.de. So instead we
+ * look for a shared word of real length between the two domains. Without one,
+ * the address is probably a third party (a vendor, an accountant, a partner)
+ * and must not silently become the outreach target.
+ */
+export function sameOrg(siteHost: string, emailDomain: string): boolean {
+  const words = (h: string) =>
+    h.toLowerCase().replace(/^www\./, "").split(/[.\-]/)
+      .filter((w) => w.length >= 4 && !["com","net","org","co","inc","llc","www"].includes(w));
+  const norm = (h: string) => h.toLowerCase().replace(/^www\./, "");
+  const site = words(siteHost);
+  const mail = words(emailDomain);
+  // Short labels (biz-bob.com -> biz/bob/com) survive no filter, so fall back
+  // to comparing the hosts directly rather than declaring them unrelated.
+  if (!site.length || !mail.length) {
+    const a = norm(siteHost), b = norm(emailDomain);
+    return a === b || a.endsWith(`.${b}`) || b.endsWith(`.${a}`);
+  }
+  return site.some((s) => mail.some((m) => s === m || s.includes(m) || m.includes(s)));
+}
 
 export interface FoundEmail {
   address: string;
@@ -83,29 +125,39 @@ export interface FoundEmail {
 
 /**
  * Harvest addresses from a company's own page.
- * mailto: links score 1.0; bare text matches score 0.8. Anything at or below
- * 0.8 still requires human approval before it can be queued.
+ *
+ *   1.0  mailto: link
+ *   0.8  visible page text
+ *   0.6  inside a <script> blob -- JS-rendered sites (Next.js and friends) put
+ *        the real contact address in embedded JSON and never in the markup, so
+ *        skipping scripts entirely loses genuine addresses
+ *
+ * Anything whose domain looks unrelated to the site is halved, because a third
+ * party's address must never outrank the company's own.
+ * Everything below 1.0 still requires human verification before it can queue.
  */
-export function harvestEmails(html: string): FoundEmail[] {
+export function harvestEmails(html: string, siteHost = ""): FoundEmail[] {
   const found = new Map<string, FoundEmail>();
 
-  for (const m of html.matchAll(/href="mailto:([^"?]+)/gi)) {
-    const address = decode(m[1] ?? "").toLowerCase();
-    if (address && !JUNK.test(address) && ADDR.test(address)) {
-      ADDR.lastIndex = 0;
-      found.set(address, { address, source: "mailto", confidence: 1.0 });
-    }
-  }
+  const offer = (raw: string, source: FoundEmail["source"], base: number) => {
+    const address = raw.toLowerCase().trim();
+    if (!address || isJunkAddress(address)) return;
+    const domain = address.split("@")[1] ?? "";
+    const related = !siteHost || sameOrg(siteHost, domain);
+    const confidence = related ? base : base * 0.5;
+    const prev = found.get(address);
+    if (!prev || confidence > prev.confidence) found.set(address, { address, source, confidence });
+  };
 
-  const text = html.replace(/<script[\s\S]*?<\/script>/gi, " ")
-                   .replace(/<style[\s\S]*?<\/style>/gi, " ")
-                   .replace(/<[^>]+>/g, " ");
-  for (const m of text.matchAll(ADDR)) {
-    const address = m[0].toLowerCase();
-    if (!JUNK.test(address) && !found.has(address)) {
-      found.set(address, { address, source: "contact_page", confidence: 0.8 });
-    }
-  }
+  for (const m of html.matchAll(/href="mailto:([^"?]+)/gi)) offer(m[1] ?? "", "mailto", 1.0);
+
+  const scripts = html.match(/<script[\s\S]*?<\/script>/gi)?.join(" ") ?? "";
+  const visible = html.replace(/<script[\s\S]*?<\/script>/gi, " ")
+                      .replace(/<style[\s\S]*?<\/style>/gi, " ")
+                      .replace(/<[^>]+>/g, " ");
+
+  for (const m of visible.matchAll(new RegExp(ADDR.source, "g"))) offer(m[0], "contact_page", 0.8);
+  for (const m of scripts.matchAll(new RegExp(ADDR.source, "g"))) offer(m[0], "contact_page", 0.6);
 
   return [...found.values()].sort((a, b) => b.confidence - a.confidence);
 }

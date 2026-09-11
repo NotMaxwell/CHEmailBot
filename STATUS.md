@@ -26,11 +26,34 @@ Measured on real scraped companies:
 
 | channel | hit rate |
 |---|---|
-| email address found by crawling their site | **1 of 4** |
+| email address found by crawling their site | **8 of 10** |
 | fillable contact form found on their site  | **7 of 8** |
 
-**Form assist is the primary channel, not email.** Plan the workflow around it.
-Both samples are small; re-measure across the full set.
+Both channels are viable; between them nearly every company is reachable. The
+earlier "1 of 4" figure was an unlucky sample taken before the discovery bugs
+below were fixed. Samples are still small — re-measure across the full set.
+
+### Email discovery, after debugging
+
+Fixed by instrumenting real company sites rather than reasoning about it:
+
+- **Script blobs were discarded.** JS-rendered sites (Next.js and friends) put
+  the contact address in embedded JSON and never in the markup, so stripping
+  `<script>` lost it. Now harvested at 0.6 confidence — recovered
+  `info@octavefederal.com`, which the old code missed entirely despite the
+  address appearing three times in the HTML.
+- **Third-party addresses could win.** A company's accountant at `intuit.com`
+  ranked equal to its own `info@`. Addresses whose domain is unrelated to the
+  site are now halved (`sameOrg`).
+- **Short domains broke that check.** `biz-bob.com` splits to biz/bob/com, all
+  under the word-length filter, leaving nothing to compare — so the company's
+  OWN address was demoted as third-party. Falls back to host comparison.
+- **Sentry DSNs and form placeholders were harvested** as real addresses
+  (`user@domain.com`). Junk filter now checks the whole domain and the local
+  part, not just the text right after the `@`.
+
+Confidence: 1.0 mailto · 0.8 visible text · 0.6 script blob · halved if the
+domain looks unrelated. Anything under 1.0 still needs human verification.
 
 Form detection tries `/contact`, `/contact-us`, `/contact.html`, `/about`,
 `/about-us`, then the homepage LAST — the reverse of discover.ts, because a bare

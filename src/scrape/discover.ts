@@ -12,7 +12,9 @@ import { harvestEmails } from "./parse.ts";
 import { recordEmails, getCompany } from "../repo.ts";
 import { db } from "../db.ts";
 
-export const CONTACT_PATHS = ["", "/contact", "/contact-us", "/about", "/about-us"];
+export const CONTACT_PATHS = [
+  "", "/contact", "/contact-us", "/contact.html", "/about", "/about-us",
+];
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -44,7 +46,7 @@ export async function discoverFor(companyId: number): Promise<number> {
     const html = await tryFetch(new URL(path, base).href);
     await sleep(config.scrape.delayMs);
     if (!html) continue;
-    for (const e of harvestEmails(html)) {
+    for (const e of harvestEmails(html, base.hostname)) {
       const prev = found.get(e.address);
       if (!prev || e.confidence > prev.confidence) found.set(e.address, e);
     }
