@@ -10,7 +10,8 @@
     "scrape:emails": "bun src/scrape/discover.ts",
     "form:assist": "bun src/forms/assist.ts",
     "test": "bun test",
-    "send:drain": "bun run src/mail/queue.ts"
+    "send:drain": "bun run src/mail/queue.ts",
+    "backup": "bun src/backup.ts"
   },
   "dependencies": {
     "hono": "^4.6.0",

@@ -1,8 +1,56 @@
 import { Database } from "bun:sqlite";
+import { dirname, isAbsolute, join } from "node:path";
+import { mkdirSync } from "node:fs";
 import { config } from "./config.ts";
 
-export const db = new Database(config.dbPath, { create: true });
-db.exec(await Bun.file("data/schema.sql").text());
+/**
+ * Project root, derived from THIS FILE's location rather than process.cwd().
+ *
+ * With a cwd-relative path, starting the server from anywhere but the repo
+ * root either crashes or -- worse -- silently creates a second, empty database
+ * and presents it as your data. Anchoring to the module location means the
+ * same database opens no matter where the process is launched from.
+ */
+export const ROOT = dirname(import.meta.dir);
+
+/**
+ * Where a configured DB_PATH actually points. Relative paths resolve against
+ * the project root -- never the cwd, which is what let a stray empty database
+ * be created when the server was started from elsewhere.
+ */
+export function resolveDbPath(dbPath: string, root: string): string {
+  if (dbPath === ":memory:" || dbPath === "") return dbPath;
+  return isAbsolute(dbPath) ? dbPath : join(root, dbPath);
+}
+
+const IN_MEMORY = config.dbPath === ":memory:" || config.dbPath === "";
+
+/** Absolute path to the database actually in use. */
+export const DB_FILE = resolveDbPath(config.dbPath, ROOT);
+
+if (!IN_MEMORY) mkdirSync(dirname(DB_FILE), { recursive: true });
+
+export const db = new Database(DB_FILE, { create: true });
+db.exec(await Bun.file(join(ROOT, "data/schema.sql")).text());
+
+/**
+ * Checkpoint the WAL and close cleanly.
+ *
+ * Note: WAL is already crash-safe -- a `kill -9` loses nothing, SQLite replays
+ * the log on next open. This is hygiene (it folds the -wal file back into the
+ * main database), not the thing that makes data durable.
+ */
+let closed = false;
+export function closeDb(): void {
+  if (closed || IN_MEMORY) return;
+  closed = true;
+  try { db.exec("PRAGMA wal_checkpoint(TRUNCATE)"); } catch { /* already gone */ }
+  try { db.close(); } catch { /* already closed */ }
+}
+for (const signal of ["SIGINT", "SIGTERM"] as const) {
+  process.on(signal, () => { closeDb(); process.exit(0); });
+}
+process.on("exit", closeDb);
 
 /**
  * Collapse a display name to a dedup key.

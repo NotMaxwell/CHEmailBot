@@ -96,6 +96,33 @@ Partial, so `failed`/`bounced` drop out and genuine retries work. `nameKey()` in
 `src/db.ts` normalizes identity so `A-P-T Research, Inc. (APT)` and
 `APT Research Inc` collide (`tests/namekey.test.ts`).
 
+## Persistence
+
+State lives in `data/chembot.db` (SQLite, WAL). Verified by making real changes
+through the UI, `kill -9`-ing the server, and restarting: review status,
+template choice, manual addresses, tags, and the current campaign all came back
+intact. WAL is crash-safe on its own — a hard kill loses nothing.
+
+**The real risk was never crash safety, it was the path.** `DB_PATH` defaulted
+to the relative `data/chembot.db`, resolved against `process.cwd()`. Starting
+the server from anywhere but the repo root silently created a *second, empty*
+database and served it as your data. Paths now resolve against the project root
+derived from `import.meta.dir`, so the same database opens from any directory
+(`resolveDbPath`, guarded by `tests/persistence.test.ts`).
+
+A related hazard: `bun test` shares one module registry, so the first file to
+import `src/db.ts` fixes the path for the whole run — which briefly pointed the
+suite at the real database. `bunfig.toml` now preloads `tests/setup.ts`, which
+forces `:memory:` before any test module loads.
+
+### Backups
+
+`bun run backup` writes a timestamped snapshot to `data/backups/` using
+`VACUUM INTO`, which is consistent even while the server is mid-write (unlike
+`cp`, which can catch the file between a write and its WAL checkpoint).
+Snapshots are gitignored. There is no automatic schedule — run it before
+anything destructive.
+
 ## Tags and history
 
 `/history` lists every company ever contacted, newest first, filterable by tag

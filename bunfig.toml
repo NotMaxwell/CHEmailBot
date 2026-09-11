@@ -1,0 +1,5 @@
+[test]
+# Guarantees no test can ever touch the real database. Without this, a test
+# file that imports src/db.ts before the others sets the singleton's path for
+# the whole run -- and that nearly pointed the suite at production data.
+preload = ["./tests/setup.ts"]
