@@ -12,6 +12,9 @@
 
 import { config, assertSendable } from "../config.ts";
 import { db, isSuppressed, alreadyContacted } from "../db.ts";
+import { getCompany, emailsFor, getTemplate } from "../repo.ts";
+import { render, contextFor, footer } from "./render.ts";
+import { sendMessage } from "./gmail.ts";
 
 /** Daily cap for day N of the campaign, clamped to the ramp's last value. */
 export function capForDay(dayIndex: number): number {
@@ -25,14 +28,176 @@ export function jitteredDelayMs(): number {
   return Math.round(base * (0.6 + Math.random() * 0.8));
 }
 
-/** TODO: insert a 'queued' row; surfaces the dedup violation as a clean error. */
-export function enqueue(_companyId: number): void {
-  throw new Error("not implemented");
+const today = () => new Date().toISOString().slice(0, 10);
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+export interface Budget { day: string; cap: number; used: number }
+
+/**
+ * Today's row in send_budget, created on first use. The campaign "day index"
+ * is how many days have already been used, so the ramp advances only on days
+ * you actually send -- a weekend off doesn't burn ramp steps.
+ */
+export function todayBudget(): Budget {
+  const day = today();
+  const existing = db.query<Budget, [string]>(
+    `SELECT day, cap, used FROM send_budget WHERE day = ?`).get(day);
+  if (existing) return existing;
+
+  const priorDays = db.query<{ n: number }, []>(
+    `SELECT COUNT(*) AS n FROM send_budget`).get()?.n ?? 0;
+  const cap = capForDay(priorDays);
+  db.query(`INSERT INTO send_budget (day, cap, used) VALUES (?, ?, 0)`).run(day, cap);
+  return { day, cap, used: 0 };
 }
 
-/** TODO: drain the queue, one message per jitteredDelayMs, honoring the cap. */
-export async function drain(): Promise<void> {
-  assertSendable();
-  void db; void isSuppressed; void alreadyContacted;
-  throw new Error("not implemented");
+/** Gate 3+4, as a plain list of reasons. Empty means clear to queue. */
+export function blockersFor(companyId: number): string[] {
+  const out: string[] = [];
+  const company = getCompany(companyId);
+  if (!company) return ["Company not found."];
+
+  if (company.review_status !== "approved") out.push("Company is not verified (step 2).");
+  const primary = emailsFor(companyId).find((e) => e.is_primary === 1);
+  if (!primary) out.push("No address selected (step 5).");
+  else {
+    if (!primary.verified) out.push("Selected address is not verified (step 3).");
+    if (isSuppressed(primary.address)) out.push(`${primary.address} is on the suppression list.`);
+  }
+  if (!company.template_id) out.push("No template selected (step 4).");
+  if (alreadyContacted(companyId)) out.push("Already queued or sent -- a second send is blocked.");
+  return out;
 }
+
+/**
+ * Gate 1-4, then insert a 'queued' row holding the FULLY RENDERED copy, so the
+ * log stays truthful even if you edit the template afterwards.
+ */
+export function enqueue(companyId: number): void {
+  assertSendable();                                   // gate 2
+
+  const blockers = blockersFor(companyId);            // gates 3 + 4
+  if (blockers.length) throw new Error(blockers.join(" "));
+
+  const company = getCompany(companyId)!;
+  const primary = emailsFor(companyId).find((e) => e.is_primary === 1)!;
+  const template = getTemplate(company.template_id!);
+  if (!template) throw new Error("Selected template no longer exists.");
+
+  const ctx = contextFor(company);
+  const subject = render(template.subject, ctx);
+  const body = render(template.body, ctx) + footer();
+
+  try {
+    db.query(
+      `INSERT INTO sends (company_id, email_address, template_id, subject, body,
+                          channel, status)
+       VALUES (?, ?, ?, ?, ?, 'gmail', 'queued')`,
+    ).run(companyId, primary.address, template.id, subject, body);
+  } catch (err) {
+    // The partial unique index is the real guarantee; translate it for the UI.
+    if (String(err).includes("UNIQUE constraint failed")) {
+      throw new Error("Blocked by the dedup index: this company or address already has a live send.");
+    }
+    throw err;
+  }
+}
+
+/** Records an outreach made by hand through a company's own contact form,
+ *  so form contacts count against the same dedup guarantee as email. */
+export function recordFormSend(companyId: number): void {
+  const company = getCompany(companyId);
+  if (!company) throw new Error("Company not found.");
+  if (alreadyContacted(companyId)) throw new Error("Already queued or sent.");
+  const template = company.template_id ? getTemplate(company.template_id) : null;
+  const ctx = contextFor(company);
+  db.query(
+    `INSERT INTO sends (company_id, email_address, template_id, subject, body,
+                        channel, status, sent_at)
+     VALUES (?, ?, ?, ?, ?, 'form', 'sent', datetime('now'))`,
+  ).run(
+    companyId,
+    `form:${company.chamber_slug}`,           // no address exists; keep the row unique
+    template?.id ?? null,
+    template ? render(template.subject, ctx) : "(contact form)",
+    template ? render(template.body, ctx) + footer() : "(submitted via company contact form)",
+  );
+}
+
+export interface DrainReport {
+  dryRun: boolean; cap: number; used: number;
+  attempted: number; sent: number; failed: number; skipped: number;
+  stoppedBecause: string;
+}
+
+interface QueuedRow { id: number; company_id: number; email_address: string;
+  subject: string; body: string; attempts: number }
+
+/**
+ * Drain the queue: one message per jittered interval, stopping at the day's cap.
+ * With DRY_RUN on (the default) it reports what it *would* send and changes
+ * nothing -- rows stay queued so a real run still picks them up.
+ */
+export async function drain(
+  onProgress?: (r: DrainReport) => void,
+): Promise<DrainReport> {
+  assertSendable();                                   // gate 2
+
+  const budget = todayBudget();                       // gate 5
+  const report: DrainReport = {
+    dryRun: config.send.dryRun, cap: budget.cap, used: budget.used,
+    attempted: 0, sent: 0, failed: 0, skipped: 0, stoppedBecause: "queue empty",
+  };
+
+  const queued = db.query<QueuedRow, []>(
+    `SELECT id, company_id, email_address, subject, body, attempts
+     FROM sends WHERE status = 'queued' ORDER BY queued_at`).all();
+
+  for (const row of queued) {
+    if (report.used >= budget.cap) {
+      report.stoppedBecause = `daily cap reached (${budget.cap})`;
+      break;
+    }
+
+    // Re-check suppression: it may have been added since this was queued.
+    if (isSuppressed(row.email_address)) {
+      db.query(`UPDATE sends SET status='skipped', error='suppressed' WHERE id=?`).run(row.id);
+      report.skipped++;
+      onProgress?.(report);
+      continue;
+    }
+
+    report.attempted++;
+
+    if (report.dryRun) {                              // gate 1
+      console.log(`[DRY_RUN] would send to ${row.email_address}: ${row.subject}`);
+      report.sent++;
+      report.used++;
+      onProgress?.(report);
+      continue;                                       // no sleep, no DB change
+    }
+
+    try {
+      const res = await sendMessage(row.email_address, row.subject, row.body);
+      db.query(
+        `UPDATE sends SET status='sent', gmail_message_id=?, gmail_thread_id=?,
+         sent_at=datetime('now'), attempts=attempts+1, error=NULL WHERE id=?`,
+      ).run(res.messageId, res.threadId, row.id);
+      db.query(`UPDATE send_budget SET used = used + 1 WHERE day = ?`).run(budget.day);
+      report.sent++;
+      report.used++;
+    } catch (err) {
+      db.query(
+        `UPDATE sends SET status='failed', error=?, attempts=attempts+1 WHERE id=?`,
+      ).run(String(err instanceof Error ? err.message : err), row.id);
+      report.failed++;
+    }
+    onProgress?.(report);
+    await sleep(jitteredDelayMs());
+  }
+
+  onProgress?.(report);
+  return report;
+}
+
+if (import.meta.main) console.log(await drain());

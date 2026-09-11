@@ -14,9 +14,20 @@ function statusPill(c: CompanyRow): string {
   return `<span class="pill mut">new</span>`;
 }
 
-/** Step 1 controls + the queue table. */
-export function queuePage(rows: CompanyRow[], filter: string, running: string | null): string {
+export interface SendPanel {
+  authorized: boolean; dryRun: boolean; cap: number; used: number; queued: number;
+}
+
+const errBanner = (err: string | null) =>
+  err ? `<div class="banner" style="border-left-color:var(--bad)"><b>Blocked:</b> ${esc(err)}</div>` : "";
+
+/** Step 1 controls, the sending panel, and the queue table. */
+export function queuePage(
+  rows: CompanyRow[], filter: string, running: string | null,
+  send: SendPanel, err: string | null,
+): string {
   return `
+${errBanner(err)}
 <div class="card">
   <div class="row">
     <form method="post" action="/scrape/chamber" class="inline">
@@ -27,6 +38,22 @@ export function queuePage(rows: CompanyRow[], filter: string, running: string | 
     </form>
     ${running ? `<span class="warn">${esc(running)} — reload to refresh</span>`
               : `<span class="mut">Scrapes run in the background; reload to see progress.</span>`}
+  </div>
+</div>
+
+<div class="card">
+  <div class="row">
+    <b>Sending</b>
+    ${send.authorized
+      ? '<span class="pill ok">Gmail connected</span>'
+      : '<a href="/oauth/start"><span class="pill warn">connect Gmail →</span></a>'}
+    ${send.dryRun
+      ? '<span class="pill warn">DRY RUN — nothing transmits</span>'
+      : '<span class="pill bad">LIVE — messages will actually send</span>'}
+    <span class="mut">today ${send.used}/${send.cap} · ${send.queued} queued</span>
+    <form method="post" action="/send/drain" class="inline">
+      <button class="primary" ${running || !send.queued ? "disabled" : ""}>Drain queue</button>
+    </form>
   </div>
 </div>
 
@@ -63,9 +90,11 @@ export function companyPage(
   preview: { subject: string; body: string } | null,
   contacted: { status: string; sent_at: string | null } | null,
   blockers: string[],
+  err: string | null = null,
 ): string {
   const primary = emails.find((e) => e.is_primary === 1);
   return `
+${errBanner(err)}
 <p class="mut">${esc(c.street ?? "")} ${esc(c.city ?? "")} ${esc(c.state ?? "")} ${esc(c.postal_code ?? "")}
    ${c.phone ? " · " + esc(c.phone) : ""}
    ${c.website ? ` · <a href="${esc(c.website)}" target="_blank" rel="noopener">${esc(c.website)}</a>` : ""}</p>
@@ -129,9 +158,17 @@ ${preview ? `<div class="card">
   ${blockers.length
     ? `<ul class="mut">${blockers.map((b) => `<li>${esc(b)}</li>`).join("")}</ul>`
     : ""}
-  <form method="post" action="/company/${c.id}/queue">
-    <button class="primary" ${blockers.length ? "disabled" : ""}>Queue this send</button>
-  </form>
+  <div class="row">
+    <form method="post" action="/company/${c.id}/queue" class="inline">
+      <button class="primary" ${blockers.length ? "disabled" : ""}>Queue this send</button>
+    </form>
+    ${!contacted ? `<form method="post" action="/company/${c.id}/form-sent" class="inline">
+      <button title="For outreach you submitted by hand through their contact form">
+        Mark contacted via their form</button></form>` : ""}
+  </div>
+  ${c.website && !primary ? `<p class="mut" style="margin-top:.6rem">
+    No address found. Run <code>bun run form:assist ${c.id}</code> to open their contact
+    form with this message pre-filled — it never submits for you.</p>` : ""}
 </div>
 <p><a href="/">← back to queue</a></p>`;
 }

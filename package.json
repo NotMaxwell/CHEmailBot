@@ -9,11 +9,11 @@
     "scrape:chamber": "bun src/scrape/chamber.ts",
     "scrape:emails": "bun src/scrape/discover.ts",
     "form:assist": "bun src/forms/assist.ts",
-    "test": "bun test"
+    "test": "bun test",
+    "send:drain": "bun run src/mail/queue.ts"
   },
   "dependencies": {
     "hono": "^4.6.0",
-    "googleapis": "^144.0.0",
     "playwright": "^1.48.0"
   },
   "devDependencies": {

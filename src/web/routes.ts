@@ -7,6 +7,8 @@ import { config } from "../config.ts";
 import { syncAll } from "../scrape/chamber.ts";
 import { discoverAll } from "../scrape/discover.ts";
 import { render, contextFor, footer } from "../mail/render.ts";
+import { enqueue, drain, recordFormSend, blockersFor, todayBudget } from "../mail/queue.ts";
+import { authUrl, exchangeCode, isAuthorized } from "../mail/gmail.ts";
 
 export const routes = new Hono();
 
@@ -21,6 +23,10 @@ function start(label: string, job: () => Promise<unknown>) {
 }
 
 const int = (v: unknown) => Number.parseInt(String(v ?? ""), 10);
+
+/** Surfaces a thrown message back into the UI as a banner. */
+const fail = (path: string, e: unknown) =>
+  `${path}?err=${encodeURIComponent(e instanceof Error ? e.message : String(e))}`;
 
 // --- step 1: scrape ---------------------------------------------------------
 
@@ -40,8 +46,16 @@ routes.post("/scrape/emails", (c) => {
 
 routes.get("/", (c) => {
   const filter = c.req.query("filter") ?? "all";
+  const budget = todayBudget();
   return c.html(layout("Review queue",
-    queuePage(repo.listCompanies(filter), filter, running), repo.stats()));
+    queuePage(repo.listCompanies(filter), filter, running, {
+      authorized: isAuthorized(),
+      dryRun: config.send.dryRun,
+      cap: budget.cap,
+      used: budget.used,
+      queued: repo.stats().queued,
+    }, c.req.query("err") ?? null),
+    repo.stats()));
 });
 
 routes.get("/company/:id", (c) => {
@@ -50,7 +64,6 @@ routes.get("/company/:id", (c) => {
   if (!company) return c.notFound();
 
   const emails = repo.emailsFor(id);
-  const primary = emails.find((e) => e.is_primary === 1);
   const template = company.template_id ? repo.getTemplate(company.template_id) : null;
 
   let preview: { subject: string; body: string } | null = null;
@@ -70,18 +83,14 @@ routes.get("/company/:id", (c) => {
     `SELECT status, sent_at FROM sends WHERE company_id=? AND status IN ('queued','sent')`,
   ).get(id);
 
-  // Every gate that stands between here and a send, stated plainly.
-  const blockers: string[] = [];
-  if (sent) blockers.push(`Already ${sent.status} — a second send is blocked.`);
-  if (company.review_status !== "approved") blockers.push("Company is not verified yet (step 2).");
-  if (!primary) blockers.push("No address selected (step 5).");
-  else if (!primary.verified) blockers.push("Selected address is not verified (step 3).");
-  if (!template) blockers.push("No template selected (step 4).");
+  // One source of truth for the gates: the same function the queue enforces.
+  const blockers = blockersFor(id);
   if (!config.canSpam.senderName || !config.canSpam.postalAddress || !config.canSpam.unsubscribeMailto)
     blockers.push("CAN-SPAM fields are missing from .env (sender name, postal address, unsubscribe).");
 
   return c.html(layout(company.name,
-    companyPage(company, emails, repo.listTemplates(), preview, sent ?? null, blockers),
+    companyPage(company, emails, repo.listTemplates(), preview, sent ?? null,
+                blockers, c.req.query("err") ?? null),
     repo.stats()));
 });
 
@@ -121,8 +130,30 @@ routes.post("/company/:id/email", async (c) => {
 
 routes.post("/company/:id/queue", (c) => {
   const id = int(c.req.param("id"));
-  // TODO(queue): hand off to mail/queue.enqueue() once Gmail OAuth is wired.
+  try { enqueue(id); } catch (e) { return c.redirect(fail(`/company/${id}`, e)); }
   return c.redirect(`/company/${id}`);
+});
+
+/** Records a contact made by hand through the company's own form, so form
+ *  outreach falls under the same dedup guarantee as email. */
+routes.post("/company/:id/form-sent", (c) => {
+  const id = int(c.req.param("id"));
+  try { recordFormSend(id); } catch (e) { return c.redirect(fail(`/company/${id}`, e)); }
+  return c.redirect(`/company/${id}`);
+});
+
+// --- sending ----------------------------------------------------------------
+
+routes.post("/send/drain", (c) => {
+  try {
+    start("Draining send queue", () =>
+      drain((r) => {
+        running = `Sending: ${r.sent}/${r.cap} today` +
+                  (r.failed ? `, ${r.failed} failed` : "") +
+                  (r.dryRun ? " (DRY RUN)" : "");
+      }));
+  } catch (e) { return c.redirect(fail("/", e)); }
+  return c.redirect("/");
 });
 
 // --- templates --------------------------------------------------------------
@@ -165,5 +196,19 @@ ${rows.map((r) => `<tr><td>${esc(r.name)}</td><td>${esc(r.email_address)}</td>
 </tbody></table>` : `<p class="mut">Nothing sent yet.</p>`, repo.stats()));
 });
 
-routes.get("/oauth/start", (c) => c.text("TODO: Gmail OAuth bootstrap"));
-routes.get("/oauth/callback", (c) => c.text("TODO: Gmail OAuth bootstrap"));
+// --- Gmail OAuth bootstrap --------------------------------------------------
+
+routes.get("/oauth/start", (c) => {
+  try { return c.redirect(authUrl()); }
+  catch (e) { return c.redirect(fail("/", e)); }
+});
+
+routes.get("/oauth/callback", async (c) => {
+  const code = c.req.query("code");
+  const denied = c.req.query("error");
+  if (denied) return c.redirect(fail("/", new Error(`Google returned: ${denied}`)));
+  if (!code) return c.redirect(fail("/", new Error("Google returned no authorization code.")));
+  try { await exchangeCode(code); }
+  catch (e) { return c.redirect(fail("/", e)); }
+  return c.redirect("/");
+});
