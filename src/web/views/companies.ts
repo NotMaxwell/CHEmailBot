@@ -1,4 +1,5 @@
 import { esc } from "./layout.ts";
+import { hostOf, normalizeWebsite } from "../../url.ts";
 import type { CompanyRow } from "../../repo.ts";
 import type { Company, EmailCandidate } from "../../types.ts";
 
@@ -40,8 +41,8 @@ ${errBanner(err)}
     <form method="post" action="/scrape/emails" class="inline">
       <button ${running ? "disabled" : ""}>Find emails for scraped companies</button>
     </form>
-    ${running ? `<span class="warn">${esc(running)} — reload to refresh</span>`
-              : `<span class="mut">Scrapes run in the background; reload to see progress.</span>`}
+    ${running ? `<span class="warn">${esc(running)} — updating live</span>`
+              : `<span class="mut">Scrapes run in the background; this page updates while they do.</span>`}
   </div>
 </div>
 
@@ -68,12 +69,13 @@ ${errBanner(err)}
     <b>${esc(send.campaign)}</b></span>
 </div>
 
-<table><thead><tr>
+<div class="scroll"><table><thead><tr>
   <th>Company</th><th>Address on file</th><th>Template</th><th>Status</th><th></th>
 </tr></thead><tbody>
 ${rows.map((c) => `<tr>
   <td><a href="/company/${c.id}"><b>${esc(c.name)}</b></a><br>
-      <span class="mut">${esc(c.city ?? "")}${c.website ? " · " + esc(new URL(c.website).hostname) : ""}</span></td>
+      <span class="mut">${esc(c.city ?? "")}${hostOf(c.website) ? " · " + esc(hostOf(c.website)) : ""}</span>
+      ${c.categories ? `<br><span class="mut" style="font-size:12px">${esc(c.categories)}</span>` : ""}</td>
   <td>${c.primary_address
         ? `${esc(c.primary_address)} ${c.primary_verified
              ? '<span class="pill ok">verified</span>'
@@ -83,7 +85,7 @@ ${rows.map((c) => `<tr>
   <td>${statusPill(c)}</td>
   <td><a href="/company/${c.id}">Review →</a></td>
 </tr>`).join("")}
-</tbody></table>
+</tbody></table></div>
 ${rows.length ? "" : `<p class="mut">Nothing here yet. Run the Chamber scrape above.</p>`}`;
 }
 
@@ -97,13 +99,18 @@ export function companyPage(
   blockers: string[],
   err: string | null = null,
   priorWarning: string | null = null,
+  suppression: string | null = null,
 ): string {
   const primary = emails.find((e) => e.is_primary === 1);
+  const site = normalizeWebsite(c.website);   // only ever link to http(s)
   return `
 ${errBanner(err)}
 <p class="mut">${esc(c.street ?? "")} ${esc(c.city ?? "")} ${esc(c.state ?? "")} ${esc(c.postal_code ?? "")}
    ${c.phone ? " · " + esc(c.phone) : ""}
-   ${c.website ? ` · <a href="${esc(c.website)}" target="_blank" rel="noopener">${esc(c.website)}</a>` : ""}</p>
+   ${site ? ` · <a href="${esc(site)}" target="_blank" rel="noopener noreferrer">${esc(site)}</a>` : ""}</p>
+
+${suppression ? `<div class="banner" style="border-left-color:var(--bad)"><b>Do not contact:</b>
+  ${esc(suppression)} <a href="/suppressions">Manage list</a></div>` : ""}
 
 ${priorWarning ? `<div class="banner"><b>Re-contact:</b> ${esc(priorWarning)}
   Allowed — dedup is scoped to the current campaign.</div>` : ""}
@@ -120,6 +127,10 @@ ${contacted ? `<div class="banner"><b>Already ${esc(contacted.status)}</b>
       <input type="hidden" name="status" value="approved"><button>Verify as a target</button></form>
     <form method="post" action="/company/${c.id}/review" class="inline">
       <input type="hidden" name="status" value="rejected"><button>Reject</button></form>
+    ${suppression ? "" : `<form method="post" action="/company/${c.id}/suppress" class="inline"
+        onsubmit="return confirm('Block this company from all future outreach?')">
+      <input type="hidden" name="reason" value="Do-not-contact set from company page">
+      <button title="Records an opt-out against this company's domain">Do not contact</button></form>`}
   </div>
 </div>
 

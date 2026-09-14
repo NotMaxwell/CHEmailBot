@@ -1,24 +1,19 @@
 # CHEmailBot — status & handoff
 
-_Last updated: 2026-09-11. Written so work can resume cold, with no network._
+_Last updated: 2026-09-14, at the 1.0.0 release._
 
 ## Where this stands
 
-**Everything is implemented and verified end to end except the live Gmail
-send**, which needs OAuth credentials you have to create.
+**Released as 1.0.0 on 2026-09-14.** [CHANGELOG.md](CHANGELOG.md) lists what
+shipped, every bug fixed in the release audit, and the known limitations.
 
-Proven by running it (Bun 1.4.0, `bun test` → 19 pass, `bunx tsc --noEmit` clean):
+Verified at release: 68 tests, `tsc` clean, and live checks against the running
+server and real data — loopback-only bind (LAN refused), CSRF (foreign origin
+403, same origin 302), every page renders, boot migrations applied to the
+314-company database (a pre-migration snapshot is in `data/backups/`).
 
-- scraped 4 real listings from `computers-it-web-1439` into the DB
-- ran discovery against those companies' own sites → 1 address found
-- drove all five review steps over HTTP; the send button ungated correctly
-- queued a send, then **failed to double-send it at both layers** — the app
-  refused it, and a direct SQL INSERT bypassing all app logic was rejected by
-  `UNIQUE constraint failed: sends.company_id`
-- dry-run drain reported what it would send and left the row queued
-
-The test DB was deleted afterwards, so your first run starts clean. A working
-`.env` is in place (gitignored) with `DRY_RUN=1`.
+**Not verified: the Gmail send against Google.** It needs OAuth credentials.
+Everything up to the API call is tested.
 
 ### The one number that matters
 
@@ -176,23 +171,16 @@ table, so no `.env` edit is needed to start a new outreach.
 `/company/:id` computes a `blockers[]` list and disables the send button until
 every gate clears. `/` shows a pipeline counter strip for all five stages.
 
-## Next steps, in order
+## After 1.0
 
-1. **Fill in CAN-SPAM fields in `.env`.** `SENDER_POSTAL_ADDRESS` currently holds
-   a placeholder; it must be a real mailing address to be lawful.
-2. **Create the Gmail OAuth client** at console.cloud.google.com — desktop app,
-   scope `gmail.send` (send-only; it cannot read your inbox). Put the id/secret
-   in `.env`, then click "connect Gmail" on `/`. Token lands in
-   `.gmail-token.json` (gitignored). This is the only unexercised code path.
-3. **`bun run dev`, click "Start Chamber scrape."** ~300–400 companies at a 2s
-   delay — roughly 20–30 minutes. Watch for `upsertCompany` returning
-   `"duplicate"` often, which would mean `nameKey()` over-collapses distinct
-   companies.
-4. **Re-measure the discovery yield** (see above) once you have the full set.
-5. **`bunx playwright install chromium`** before first using form assist —
-   ~150MB, deferred until you actually need it.
-6. **Send one real message to yourself first.** Set `DRY_RUN=0`, queue a company
-   whose address you control, drain, and read what actually lands.
+1. **Connect Gmail and send one message to yourself** — the first real run of
+   the send path. `DRY_RUN=0`, queue a company whose address you control, drain.
+2. **Re-run the Chamber sync.** Existing companies carry one category each; a
+   sync records every category a company is listed under.
+3. **Run Find emails across all 314** and re-measure the hit rates, which come
+   from samples of 8–10.
+4. Launch form assist from the company page instead of the terminal.
+5. Schedule `bun run backup`.
 
 ## Before any real send
 
@@ -204,8 +192,3 @@ every gate clears. `/` shows a pipeline counter strip for all five stages.
 Sending a few hundred cold emails from a cold personal Gmail will land you in
 spam permanently.
 
-## What can be done with no internet
-
-Everything except step 1–2 above: editing templates, reading the code, and
-running the parser logic against `tests/fixtures/`. The fixtures are committed
-precisely so the parser stays testable offline.

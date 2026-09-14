@@ -39,10 +39,15 @@ test("clearing steps 2-4 clears every blocker", () => {
   expect(blockersFor(1)).toEqual([]);
 });
 
-test("a suppressed address re-blocks the send", () => {
+test("a suppressed domain re-blocks the send", () => {
   db.query(`INSERT INTO suppressions (value, kind) VALUES ('acme.example','domain')`).run();
-  expect(blockersFor(1).join(" ")).toContain("suppression");
-  db.query(`DELETE FROM suppressions`).run();
+  try {
+    expect(blockersFor(1).join(" ")).toContain("do-not-contact");
+  } finally {
+    // Cleanup must run even if the assertion fails, or the leftover suppression
+    // blocks every later test in this file and hides the one real failure.
+    db.query(`DELETE FROM suppressions`).run();
+  }
   expect(blockersFor(1)).toEqual([]);
 });
 

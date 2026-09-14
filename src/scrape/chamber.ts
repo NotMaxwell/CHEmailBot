@@ -22,7 +22,12 @@ export interface SyncProgress {
 }
 
 async function fetchPolitely(url: string): Promise<string> {
-  const res = await fetch(url, { headers: { "User-Agent": config.scrape.userAgent } });
+  const res = await fetch(url, {
+    headers: { "User-Agent": config.scrape.userAgent },
+    // Without this a single hung connection froze the scrape indefinitely --
+    // and held the one-job-at-a-time lock, blocking every other button.
+    signal: AbortSignal.timeout(config.scrape.timeoutMs),
+  });
   if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
   const text = await res.text();
   await sleep(config.scrape.delayMs);   // rate limit AFTER the read, always

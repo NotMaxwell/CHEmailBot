@@ -149,7 +149,13 @@ export function harvestEmails(html: string, siteHost = ""): FoundEmail[] {
     if (!prev || confidence > prev.confidence) found.set(address, { address, source, confidence });
   };
 
-  for (const m of html.matchAll(/href="mailto:([^"?]+)/gi)) offer(m[1] ?? "", "mailto", 1.0);
+  // Single- or double-quoted, and percent-encoded ("info%40acme.com") -- all
+  // three appear in the wild; the old pattern matched only the first form.
+  for (const m of html.matchAll(/href=["']mailto:([^"'?]+)/gi)) {
+    let raw = m[1] ?? "";
+    try { raw = decodeURIComponent(raw); } catch { /* malformed escape: use as-is */ }
+    offer(raw, "mailto", 1.0);
+  }
 
   const scripts = html.match(/<script[\s\S]*?<\/script>/gi)?.join(" ") ?? "";
   const visible = html.replace(/<script[\s\S]*?<\/script>/gi, " ")

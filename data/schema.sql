@@ -21,9 +21,18 @@ CREATE TABLE IF NOT EXISTS companies (
   linkedin      TEXT,
   category      TEXT,                   -- chamber category slug it was found under
   template_id   INTEGER REFERENCES templates(id),  -- chosen in the review UI
+  emails_checked_at TEXT,               -- last discovery crawl that reached the site
   review_status TEXT NOT NULL DEFAULT 'new'
                 CHECK (review_status IN ('new','approved','rejected')),
   scraped_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- A company can be listed under several Chamber categories. `companies.category`
+-- only ever held the LAST one seen during a sync; this holds all of them.
+CREATE TABLE IF NOT EXISTS company_categories (
+  company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  category   TEXT NOT NULL,
+  PRIMARY KEY (company_id, category)
 );
 
 -- ---------------------------------------------------------------------------
@@ -84,6 +93,9 @@ CREATE TABLE IF NOT EXISTS sends (
   error             TEXT,
   attempts          INTEGER NOT NULL DEFAULT 0,
   queued_at         TEXT NOT NULL DEFAULT (datetime('now')),
+  -- Set when a drain CLAIMS the row, before calling Gmail. A row still queued
+  -- with this set was interrupted mid-send: it may or may not have gone out.
+  attempted_at      TEXT,
   sent_at           TEXT
 );
 

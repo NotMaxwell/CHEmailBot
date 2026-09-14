@@ -36,7 +36,8 @@ function writeToken(t: StoredToken): void {
 
 export const isAuthorized = (): boolean => readToken() !== null;
 
-export function authUrl(): string {
+/** `state` must be echoed back by Google and checked in the callback. */
+export function authUrl(state: string): string {
   const { clientId, redirectUri } = config.gmail;
   if (!clientId) throw new Error("GMAIL_CLIENT_ID is not set in .env");
   return `${AUTH_ENDPOINT}?` + new URLSearchParams({
@@ -46,6 +47,7 @@ export function authUrl(): string {
     scope: SCOPE,
     access_type: "offline",   // we need a refresh token
     prompt: "consent",        // force one even on re-authorization
+    state,
   });
 }
 
@@ -53,6 +55,7 @@ async function tokenRequest(params: Record<string, string>): Promise<any> {
   const res = await fetch(TOKEN_ENDPOINT, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    signal: AbortSignal.timeout(30_000),
     body: new URLSearchParams({
       client_id: config.gmail.clientId,
       client_secret: config.gmail.clientSecret,
@@ -137,6 +140,7 @@ export async function sendMessage(
   const res = await fetch(SEND_ENDPOINT, {
     method: "POST",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    signal: AbortSignal.timeout(30_000),   // recoverInterrupted() relies on a bound
     body: JSON.stringify({ raw: b64url(buildRaw(to, subject, body)) }),
   });
   const json = await res.json();

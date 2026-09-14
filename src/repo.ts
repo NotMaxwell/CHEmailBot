@@ -1,6 +1,8 @@
 // Every query the UI needs, in one place. Routes stay thin.
-import { db, nameKey, isSuppressed, currentCampaign } from "./db.ts";
-import type { Company, EmailCandidate } from "./types.ts";
+import { db, nameKey, isSuppressed, currentCampaign, companySuppression } from "./db.ts";
+import type { Company, EmailCandidate, MergeContext } from "./types.ts";
+import { normalizeWebsite, hostOf } from "./url.ts";
+import { render } from "./mail/render.ts";
 
 export interface CompanyRow extends Company {
   email_count: number;
@@ -10,6 +12,8 @@ export interface CompanyRow extends Company {
   sent_at: string | null;
   send_channel: string | null;
   template_name: string | null;
+  /** Every Chamber category the company is listed under, comma-joined. */
+  categories: string | null;
 }
 
 /**
@@ -29,7 +33,7 @@ export function listCompanies(filter = "all", campaign = currentCampaign()): Com
     : filter === "contacted" ? `WHERE s.id IS NOT NULL`
     : filter === "new"       ? `WHERE c.review_status='new'`
     : "";
-  return db.query<CompanyRow, [string]>(`
+  const rows = db.query<CompanyRow, [string]>(`
     SELECT c.*,
            (SELECT COUNT(*) FROM emails WHERE company_id=c.id) AS email_count,
            e.address  AS primary_address,
@@ -37,7 +41,9 @@ export function listCompanies(filter = "all", campaign = currentCampaign()): Com
            s.status   AS send_status,
            s.sent_at  AS sent_at,
            s.channel  AS send_channel,
-           t.name     AS template_name
+           t.name     AS template_name,
+           (SELECT GROUP_CONCAT(category, ', ') FROM company_categories
+             WHERE company_id = c.id) AS categories
     FROM companies c
     LEFT JOIN emails e   ON e.company_id=c.id AND e.is_primary=1
     LEFT JOIN sends  s   ON s.company_id=c.id AND s.status IN ('queued','sent')
@@ -46,6 +52,10 @@ export function listCompanies(filter = "all", campaign = currentCampaign()): Com
     ${where}
     ORDER BY c.name COLLATE NOCASE
   `).all(campaign);
+  // The actionable lists must not offer a company that asked not to be contacted.
+  return filter === "ready" || filter === "form"
+    ? rows.filter((r) => !companySuppression(r.id))
+    : rows;
 }
 
 export const getCompany = (id: number) =>
@@ -78,8 +88,13 @@ export function setVerified(emailId: number, verified: boolean) {
   db.query(`UPDATE emails SET verified=? WHERE id=?`).run(verified ? 1 : 0, emailId);
 }
 
-/** Step 5: choose which of several candidate addresses the send will use. */
+/** Step 5: choose which of several candidate addresses the send will use.
+ *  Refuses an address from another company: the old version cleared this
+ *  company's primary first and then matched nothing, leaving it with none. */
 export function setPrimary(companyId: number, emailId: number) {
+  const owned = db.query<{ id: number }, [number, number]>(
+    `SELECT id FROM emails WHERE id = ? AND company_id = ?`).get(emailId, companyId);
+  if (!owned) throw new Error("That address does not belong to this company.");
   db.transaction(() => {
     db.query(`UPDATE emails SET is_primary=0 WHERE company_id=?`).run(companyId);
     db.query(`UPDATE emails SET is_primary=1 WHERE id=? AND company_id=?`)
@@ -92,11 +107,32 @@ export function setTemplate(companyId: number, templateId: number) {
   db.query(`UPDATE companies SET template_id=? WHERE id=?`).run(templateId, companyId);
 }
 
+/**
+ * An address typed in by a person is a deliberate choice: store it verified
+ * AND make it the one the send uses. It used to be stored but never selected,
+ * so a company with no discovered address stayed blocked at step 5 even after
+ * you entered one. An address that already existed is upgraded, not ignored.
+ */
 export function addManualEmail(companyId: number, address: string) {
-  db.query(
-    `INSERT OR IGNORE INTO emails (company_id,address,source,confidence,verified)
-     VALUES (?,?,'manual',1.0,1)`,
-  ).run(companyId, address.trim().toLowerCase());
+  const clean = address.trim().toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(clean)) {
+    throw new Error(`"${address.trim()}" is not a valid email address.`);
+  }
+  db.transaction(() => {
+    db.query(
+      `INSERT INTO emails (company_id, address, source, confidence, verified)
+       VALUES (?, ?, 'manual', 1.0, 1)
+       ON CONFLICT(company_id, address) DO UPDATE SET verified = 1`,
+    ).run(companyId, clean);
+    db.query(`UPDATE emails SET is_primary = 0 WHERE company_id = ?`).run(companyId);
+    db.query(`UPDATE emails SET is_primary = 1 WHERE company_id = ? AND address = ?`)
+      .run(companyId, clean);
+  })();
+}
+
+/** Called after a discovery crawl that reached the site, hits or not. */
+export function markEmailsChecked(companyId: number) {
+  db.query(`UPDATE companies SET emails_checked_at = datetime('now') WHERE id = ?`).run(companyId);
 }
 
 export function upsertCompany(m: {
@@ -105,10 +141,18 @@ export function upsertCompany(m: {
   postal_code: string | null; linkedin: string | null; category: string;
 }): "inserted" | "updated" | "duplicate" {
   const key = nameKey(m.name);
+  const website = normalizeWebsite(m.website);     // adds https://, drops javascript: etc.
+  const tagCategory = (companyId: number | bigint) =>
+    db.query(`INSERT OR IGNORE INTO company_categories (company_id, category) VALUES (?, ?)`)
+      .run(companyId, m.category);
+
   const clash = db.query<{ id: number; chamber_slug: string }, [string]>(
     `SELECT id, chamber_slug FROM companies WHERE name_key=?`,
   ).get(key);
-  if (clash && clash.chamber_slug !== m.chamber_slug) return "duplicate";
+  if (clash && clash.chamber_slug !== m.chamber_slug) {
+    tagCategory(clash.id);          // same company under another listing: keep the category
+    return "duplicate";
+  }
 
   const existing = db.query<{ id: number }, [string]>(
     `SELECT id FROM companies WHERE chamber_slug=?`,
@@ -118,15 +162,17 @@ export function upsertCompany(m: {
     db.query(
       `UPDATE companies SET name=?,website=?,phone=?,street=?,city=?,state=?,
        postal_code=?,linkedin=?,category=? WHERE id=?`,
-    ).run(m.name, m.website, m.phone, m.street, m.city, m.state,
+    ).run(m.name, website, m.phone, m.street, m.city, m.state,
           m.postal_code, m.linkedin, m.category, existing.id);
+    tagCategory(existing.id);
     return "updated";
   }
-  db.query(
+  const inserted = db.query(
     `INSERT INTO companies (chamber_slug,name,name_key,website,phone,street,city,
      state,postal_code,linkedin,category) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
-  ).run(m.chamber_slug, m.name, key, m.website, m.phone, m.street, m.city,
+  ).run(m.chamber_slug, m.name, key, website, m.phone, m.street, m.city,
         m.state, m.postal_code, m.linkedin, m.category);
+  tagCategory(inserted.lastInsertRowid);
   return "inserted";
 }
 
@@ -152,13 +198,16 @@ export function recordEmails(
 
 /** Counts for the dashboard strip. */
 export function stats() {
-  const one = (sql: string) => db.query<{ n: number }, []>(sql).get()?.n ?? 0;
+  const one = (sql: string, ...params: string[]) =>
+    db.query<{ n: number }, string[]>(sql).get(...params)?.n ?? 0;
   return {
     companies: one(`SELECT COUNT(*) n FROM companies`),
     approved:  one(`SELECT COUNT(*) n FROM companies WHERE review_status='approved'`),
     withEmail: one(`SELECT COUNT(DISTINCT company_id) n FROM emails`),
     verified:  one(`SELECT COUNT(DISTINCT company_id) n FROM emails WHERE verified=1`),
-    sent:      one(`SELECT COUNT(*) n FROM sends WHERE status='sent'`),
+    // Sent is per campaign, like every other contacted view.
+    sent:      one(`SELECT COUNT(*) n FROM sends WHERE status='sent' AND campaign=?`, currentCampaign()),
+    // Queued is global on purpose: a drain sends every campaign's queued rows.
     queued:    one(`SELECT COUNT(*) n FROM sends WHERE status='queued'`),
   };
 }
@@ -268,3 +317,92 @@ export const listCampaigns = () =>
              WHERE s.campaign = c.name) AS last
     FROM campaigns c
     ORDER BY c.created_at DESC, c.id DESC`).all();
+
+// --- templates --------------------------------------------------------------
+
+const SAMPLE_CONTEXT: MergeContext = {
+  company: "Acme", city: "Huntsville", state: "AL", website: "https://acme.example",
+  sender_name: "Sender", unsubscribe: "unsubscribe@example.com",
+};
+
+/** Throws on an unknown merge field, so a typo like {{compnay}} is caught at
+ *  save time instead of surfacing later as "(template error)" in a preview. */
+function validateTemplate(name: string, subject: string, body: string) {
+  if (!name.trim()) throw new Error("Template name cannot be empty.");
+  if (!subject.trim()) throw new Error("Subject cannot be empty.");
+  if (!body.trim()) throw new Error("Body cannot be empty.");
+  render(subject, SAMPLE_CONTEXT);
+  render(body, SAMPLE_CONTEXT);
+}
+
+export function createTemplate(name: string, subject: string, body: string): number {
+  validateTemplate(name, subject, body);
+  try {
+    return Number(db.query(`INSERT INTO templates (name, subject, body) VALUES (?, ?, ?)`)
+      .run(name.trim(), subject, body).lastInsertRowid);
+  } catch (e) {
+    if (String(e).includes("UNIQUE")) throw new Error(`A template named "${name.trim()}" already exists.`);
+    throw e;
+  }
+}
+
+export function updateTemplate(id: number, name: string, subject: string, body: string) {
+  validateTemplate(name, subject, body);
+  try {
+    db.query(`UPDATE templates SET name = ?, subject = ?, body = ? WHERE id = ?`)
+      .run(name.trim(), subject, body, id);
+  } catch (e) {
+    if (String(e).includes("UNIQUE")) throw new Error(`A template named "${name.trim()}" already exists.`);
+    throw e;
+  }
+}
+
+/**
+ * Sent messages keep a reference to their template, so a template that has been
+ * used is kept for the log. Companies merely set to use it are cleared.
+ */
+export function deleteTemplate(id: number) {
+  const used = db.query<{ n: number }, [number]>(
+    `SELECT COUNT(*) n FROM sends WHERE template_id = ?`).get(id)?.n ?? 0;
+  if (used) throw new Error(`This template is on ${used} logged message(s) and is kept for the record.`);
+  const total = db.query<{ n: number }, []>(`SELECT COUNT(*) n FROM templates`).get()?.n ?? 0;
+  if (total <= 1) throw new Error("Keep at least one template.");
+  db.transaction(() => {
+    db.query(`UPDATE companies SET template_id = NULL WHERE template_id = ?`).run(id);
+    db.query(`DELETE FROM templates WHERE id = ?`).run(id);
+  })();
+}
+
+// --- do not contact ---------------------------------------------------------
+
+export interface Suppression { id: number; value: string; kind: "address" | "domain";
+  reason: string | null; created_at: string }
+
+export const listSuppressions = () =>
+  db.query<Suppression, []>(`SELECT * FROM suppressions ORDER BY created_at DESC`).all();
+
+/** Accepts an address, a bare domain, or a pasted URL. */
+export function addSuppression(raw: string, reason?: string) {
+  const v = raw.trim().toLowerCase();
+  if (!v) throw new Error("Enter an address or a domain.");
+  const kind = v.includes("@") ? "address" : "domain";
+  const value = kind === "address" ? v : (hostOf(v.includes("://") ? v : `https://${v}`) ?? "");
+  if (!value) throw new Error(`"${raw.trim()}" is not an address or a domain.`);
+  db.query(`INSERT INTO suppressions (value, kind, reason) VALUES (?, ?, ?)
+            ON CONFLICT(value) DO UPDATE SET reason = COALESCE(excluded.reason, reason)`)
+    .run(value, kind, reason?.trim() || null);
+}
+
+export const removeSuppression = (id: number) =>
+  db.query(`DELETE FROM suppressions WHERE id = ?`).run(id);
+
+/** "Do not contact" on a company: blocks its website domain, which also covers
+ *  form contacts. Falls back to the primary address when there is no site. */
+export function suppressCompany(companyId: number, reason: string) {
+  const row = db.query<{ website: string | null; address: string | null }, [number]>(
+    `SELECT c.website, e.address FROM companies c
+     LEFT JOIN emails e ON e.company_id = c.id AND e.is_primary = 1 WHERE c.id = ?`).get(companyId);
+  const target = hostOf(row?.website) ?? row?.address;
+  if (!target) throw new Error("This company has no website or address to block.");
+  addSuppression(target, reason);
+}

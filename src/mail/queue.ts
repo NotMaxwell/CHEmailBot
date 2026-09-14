@@ -11,7 +11,8 @@
 // somehow slipped through all five.
 
 import { config, assertSendable } from "../config.ts";
-import { db, isSuppressed, alreadyContacted, priorContact, currentCampaign } from "../db.ts";
+import { db, isSuppressed, alreadyContacted, priorContact, currentCampaign,
+         companySuppression } from "../db.ts";
 import { getCompany, emailsFor, getTemplate, addTag } from "../repo.ts";
 import { render, contextFor, footer } from "./render.ts";
 import { sendMessage } from "./gmail.ts";
@@ -34,21 +35,42 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 export interface Budget { day: string; cap: number; used: number }
 
 /**
- * Today's row in send_budget, created on first use. The campaign "day index"
- * is how many days have already been used, so the ramp advances only on days
- * you actually send -- a weekend off doesn't burn ramp steps.
+ * Today's budget, computed WITHOUT writing anything.
+ *
+ * This used to insert today's row on first call, and the dashboard called it on
+ * every page view -- so merely looking at the app advanced the warm-up ramp
+ * with nothing sent. The day index is now the number of PRIOR days that
+ * actually sent something, and only recordUsage() writes a row.
  */
-export function todayBudget(): Budget {
+export function peekBudget(): Budget {
   const day = today();
-  const existing = db.query<Budget, [string]>(
-    `SELECT day, cap, used FROM send_budget WHERE day = ?`).get(day);
-  if (existing) return existing;
+  const priorDays = db.query<{ n: number }, [string]>(
+    `SELECT COUNT(*) AS n FROM send_budget WHERE day < ? AND used > 0`).get(day)?.n ?? 0;
+  const used = db.query<{ used: number }, [string]>(
+    `SELECT used FROM send_budget WHERE day = ?`).get(day)?.used ?? 0;
+  return { day, cap: capForDay(priorDays), used };
+}
 
-  const priorDays = db.query<{ n: number }, []>(
-    `SELECT COUNT(*) AS n FROM send_budget`).get()?.n ?? 0;
-  const cap = capForDay(priorDays);
-  db.query(`INSERT INTO send_budget (day, cap, used) VALUES (?, ?, 0)`).run(day, cap);
-  return { day, cap, used: 0 };
+function recordUsage(day: string, cap: number): void {
+  db.query(`INSERT INTO send_budget (day, cap, used) VALUES (?, ?, 1)
+            ON CONFLICT(day) DO UPDATE SET used = used + 1`).run(day, cap);
+}
+
+/**
+ * Rows a drain claimed but never finished: the process died between handing
+ * the message to Gmail and recording the result. It MAY have been delivered,
+ * so sending it again automatically could double-send -- the one thing this
+ * tool must never do. Fail it with an instruction instead; `failed` falls out
+ * of the dedup index, so a person who checks the Sent folder can re-queue it.
+ * Ten minutes far exceeds one attempt (Gmail calls time out at 30s), so a drain
+ * that is still running is never disturbed.
+ */
+export function recoverInterrupted(): number {
+  return db.query(
+    `UPDATE sends SET status = 'failed',
+       error = 'Interrupted mid-send -- check your Gmail Sent folder before re-queueing.'
+     WHERE status = 'queued' AND attempted_at IS NOT NULL
+       AND attempted_at < datetime('now', '-10 minutes')`).run().changes;
 }
 
 /** Gate 3+4, as a plain list of reasons. Empty means clear to queue. */
@@ -60,10 +82,9 @@ export function blockersFor(companyId: number): string[] {
   if (company.review_status !== "approved") out.push("Company is not verified (step 2).");
   const primary = emailsFor(companyId).find((e) => e.is_primary === 1);
   if (!primary) out.push("No address selected (step 5).");
-  else {
-    if (!primary.verified) out.push("Selected address is not verified (step 3).");
-    if (isSuppressed(primary.address)) out.push(`${primary.address} is on the suppression list.`);
-  }
+  else if (!primary.verified) out.push("Selected address is not verified (step 3).");
+  const suppressed = companySuppression(companyId);
+  if (suppressed) out.push(suppressed);
   if (!company.template_id) out.push("No template selected (step 4).");
   if (alreadyContacted(companyId))
     out.push(`Already queued or sent in campaign "${currentCampaign()}" -- a second send is blocked.`);
@@ -132,6 +153,8 @@ export function recordFormSend(companyId: number): void {
   const company = getCompany(companyId);
   if (!company) throw new Error("Company not found.");
   if (alreadyContacted(companyId)) throw new Error("Already queued or sent.");
+  const suppressed = companySuppression(companyId);   // an opt-out covers forms too
+  if (suppressed) throw new Error(suppressed);
   const template = company.template_id ? getTemplate(company.template_id) : null;
   const ctx = contextFor(company);
   const subject = template ? render(template.subject, ctx) : "(contact form)";
@@ -169,7 +192,8 @@ export async function drain(
 ): Promise<DrainReport> {
   assertSendable();                                   // gate 2
 
-  const budget = todayBudget();                       // gate 5
+  recoverInterrupted();
+  const budget = peekBudget();                        // gate 5
   const report: DrainReport = {
     dryRun: config.send.dryRun, cap: budget.cap, used: budget.used,
     attempted: 0, sent: 0, failed: 0, skipped: 0, stoppedBecause: "queue empty",
@@ -177,7 +201,8 @@ export async function drain(
 
   const queued = db.query<QueuedRow, []>(
     `SELECT id, company_id, email_address, subject, body, attempts, campaign
-     FROM sends WHERE status = 'queued' ORDER BY queued_at`).all();
+     FROM sends WHERE status = 'queued' AND attempted_at IS NULL
+     ORDER BY queued_at`).all();
 
   for (const row of queued) {
     if (report.used >= budget.cap) {
@@ -203,19 +228,27 @@ export async function drain(
       continue;                                       // no sleep, no DB change
     }
 
+    // Claim BEFORE calling Gmail. Two drains cannot both claim a row, and a row
+    // claimed by a process that then died is failed by recoverInterrupted()
+    // rather than picked up and sent a second time.
+    const claimed = db.query(
+      `UPDATE sends SET attempted_at = datetime('now'), attempts = attempts + 1
+       WHERE id = ? AND status = 'queued' AND attempted_at IS NULL`).run(row.id);
+    if (claimed.changes !== 1) continue;
+
     try {
       const res = await sendMessage(row.email_address, row.subject, row.body);
       db.query(
         `UPDATE sends SET status='sent', gmail_message_id=?, gmail_thread_id=?,
-         sent_at=datetime('now'), attempts=attempts+1, error=NULL WHERE id=?`,
+         sent_at=datetime('now'), error=NULL WHERE id=?`,
       ).run(res.messageId, res.threadId, row.id);
-      db.query(`UPDATE send_budget SET used = used + 1 WHERE day = ?`).run(budget.day);
+      recordUsage(budget.day, budget.cap);
       tagAsMessaged(row.company_id, row.campaign, row.subject);
       report.sent++;
       report.used++;
     } catch (err) {
       db.query(
-        `UPDATE sends SET status='failed', error=?, attempts=attempts+1 WHERE id=?`,
+        `UPDATE sends SET status='failed', error=? WHERE id=?`,
       ).run(String(err instanceof Error ? err.message : err), row.id);
       report.failed++;
     }

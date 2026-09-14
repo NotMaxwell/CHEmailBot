@@ -9,7 +9,7 @@
 
 import { config } from "../config.ts";
 import { harvestEmails } from "./parse.ts";
-import { recordEmails, getCompany } from "../repo.ts";
+import { recordEmails, getCompany, markEmailsChecked } from "../repo.ts";
 import { db } from "../db.ts";
 
 export const CONTACT_PATHS = [
@@ -42,10 +42,12 @@ export async function discoverFor(companyId: number): Promise<number> {
   try { base = new URL(company.website); } catch { return 0; }
 
   const found = new Map<string, { address: string; source: string; confidence: number }>();
+  let reached = false;
   for (const path of CONTACT_PATHS) {
     const html = await tryFetch(new URL(path, base).href);
     await sleep(config.scrape.delayMs);
     if (!html) continue;
+    reached = true;
     for (const e of harvestEmails(html, base.hostname)) {
       const prev = found.get(e.address);
       if (!prev || e.confidence > prev.confidence) found.set(e.address, e);
@@ -56,12 +58,18 @@ export async function discoverFor(companyId: number): Promise<number> {
 
   const list = [...found.values()];
   recordEmails(companyId, list);
+  // Only a crawl that actually loaded a page counts as checked. If the network
+  // was down, every site fails -- marking them all "checked, nothing found"
+  // would silently exclude them from every future run.
+  if (reached) markEmailsChecked(companyId);
   return list.length;
 }
 
 export interface DiscoverProgress { done: number; total: number; found: number }
 
-/** Run discovery for every approved company that has no address yet. */
+/** Run discovery for every company not yet successfully crawled.
+ *  It used to re-crawl every company that had no address on EVERY run --
+ *  a second click redid all the misses (minutes of polite, delayed fetches). */
 export async function discoverAll(
   onProgress?: (p: DiscoverProgress) => void,
 ): Promise<DiscoverProgress> {
@@ -69,6 +77,7 @@ export async function discoverAll(
     SELECT c.id FROM companies c
     WHERE c.website IS NOT NULL
       AND c.review_status <> 'rejected'
+      AND c.emails_checked_at IS NULL
       AND NOT EXISTS (SELECT 1 FROM emails e WHERE e.company_id = c.id)
     ORDER BY c.name COLLATE NOCASE
   `).all();

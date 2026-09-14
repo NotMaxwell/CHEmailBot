@@ -1,7 +1,10 @@
 import { Database } from "bun:sqlite";
 import { dirname, isAbsolute, join } from "node:path";
 import { mkdirSync } from "node:fs";
-import { config } from "./config.ts";
+import { config, ROOT } from "./config.ts";
+import { hostOf } from "./url.ts";
+
+export { ROOT };
 
 /**
  * Project root, derived from THIS FILE's location rather than process.cwd().
@@ -11,7 +14,6 @@ import { config } from "./config.ts";
  * and presents it as your data. Anchoring to the module location means the
  * same database opens no matter where the process is launched from.
  */
-export const ROOT = dirname(import.meta.dir);
 
 /**
  * Where a configured DB_PATH actually points. Relative paths resolve against
@@ -78,6 +80,33 @@ export function isSuppressed(address: string): boolean {
   return (row?.n ?? 0) > 0;
 }
 
+/** True if this exact domain (with or without www.) is suppressed. */
+export function isDomainSuppressed(domain: string): boolean {
+  const d = domain.toLowerCase().replace(/^www\./, "");
+  return (db.query<{ n: number }, [string]>(
+    `SELECT COUNT(*) AS n FROM suppressions WHERE kind = 'domain' AND value = ?`,
+  ).get(d)?.n ?? 0) > 0;
+}
+
+/**
+ * The reason this company must not be contacted, or null.
+ * Checks the website's domain as well as the primary address -- a form contact
+ * has no address at all, so an opt-out recorded against the domain is the only
+ * thing that can stop it.
+ */
+export function companySuppression(companyId: number): string | null {
+  const row = db.query<{ website: string | null; address: string | null }, [number]>(
+    `SELECT c.website, e.address FROM companies c
+     LEFT JOIN emails e ON e.company_id = c.id AND e.is_primary = 1
+     WHERE c.id = ?`,
+  ).get(companyId);
+  if (!row) return null;
+  const site = hostOf(row.website);
+  if (site && isDomainSuppressed(site)) return `${site} is on the do-not-contact list.`;
+  if (row.address && isSuppressed(row.address)) return `${row.address} is on the do-not-contact list.`;
+  return null;
+}
+
 /**
  * Has this company already been contacted *in this campaign*?
  * Mirrors the partial unique index above -- this is the friendly pre-check for
@@ -116,6 +145,18 @@ export function ensureColumn(table: string, column: string, decl: string): void 
 ensureColumn("emails", "verified", "INTEGER NOT NULL DEFAULT 0");
 ensureColumn("companies", "template_id", "INTEGER REFERENCES templates(id)");
 ensureColumn("sends", "campaign", "TEXT NOT NULL DEFAULT 'initial-outreach'");
+ensureColumn("sends", "attempted_at", "TEXT");
+ensureColumn("companies", "emails_checked_at", "TEXT");
+
+db.exec(`
+  -- carry the single legacy category into the many-to-many table
+  INSERT OR IGNORE INTO company_categories (company_id, category)
+    SELECT id, category FROM companies WHERE category IS NOT NULL;
+  -- Budget rows used to be created by merely VIEWING the dashboard, which
+  -- advanced the warm-up ramp with nothing sent. A row that sent nothing
+  -- carries no information; drop them so the ramp reflects real sending days.
+  DELETE FROM send_budget WHERE used = 0;
+`);
 
 /**
  * THE DEDUP GUARANTEE, scoped to a campaign.

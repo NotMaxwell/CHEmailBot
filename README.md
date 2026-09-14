@@ -1,93 +1,113 @@
 # CHEmailBot
 
-Templated cold outreach to Huntsville-area technology companies, with a web UI
-for review and a hard guarantee that no company is contacted twice.
+Outreach to Huntsville-area technology companies from the Huntsville/Madison
+County Chamber directory — with a review step before anything goes out, and a
+database-enforced guarantee that no company is contacted twice in a campaign.
 
-Stack: **Bun + Hono + HTMX + SQLite**, Gmail API for sending, Playwright for
-semi-automatic contact-form assist.
+Runs locally: **Bun + Hono + SQLite**, Playwright for contact-form assist,
+Gmail API for sending.
 
-## The finding that shapes this project
-
-The source everyone calls "the Huntsville ledger" is the Huntsville/Madison
-County Chamber directory at `cm.hsvchamber.org` (GrowthZone/ChamberMaster).
-It has 125 categories, 4 of them technology-relevant.
-
-**It publishes no email addresses.** A member page renders the contact slot as:
-
-```html
-<span itemprop="email">Send Email</span>   <!-- href="javascript:void(0)" -->
-```
-
-That's a Chamber-relayed form, not an address. What you *do* get per listing:
-name, street address, phone, fax, **website URL**, LinkedIn, category.
-
-So the pipeline is necessarily two-stage:
-
-```
-Chamber directory  ->  companies + websites   (src/scrape/chamber.ts)
-company's own site ->  real email address     (src/scrape/discover.ts)
-no address found   ->  semi-auto form assist  (src/forms/assist.ts)
-```
-
-`robots.txt` permits `/list`, `/list/category/*`, and `/list/member/*`.
-Only `/list/search` is disallowed — the scraper must never touch it.
-
-### Why we don't automate the Chamber's "Send Email" relay
-
-Every message sent through it arrives stamped with the Chamber's name, so a few
-hundred of them trace back to one member the moment anyone complains. That's a
-local-reputation cost, not just a legal one. `forms/assist.ts` targets each
-*company's own* contact form instead, and never clicks submit — it fills the
-message and hands the browser to you.
-
-## The dedup guarantee
-
-Enforced by SQLite, not by application logic:
-
-```sql
-CREATE UNIQUE INDEX sends_one_per_company
-  ON sends(company_id) WHERE status IN ('queued','sent');
-CREATE UNIQUE INDEX sends_one_per_address
-  ON sends(email_address) WHERE status IN ('queued','sent');
-```
-
-Partial indexes, so `failed`/`bounced` rows drop out and a genuine retry still
-works — but an accidental second send is rejected by the database itself.
-Company identity is normalized by `nameKey()` so `A-P-T Research, Inc. (APT)`
-and `APT Research Inc` collide correctly (see `tests/namekey.test.ts`).
-
-## Setup
+## Quick start
 
 ```sh
-curl -fsSL https://bun.sh/install | bash   # bun is not yet installed on this machine
 bun install
-cp .env.example .env                       # fill in Gmail + CAN-SPAM fields
-bun run dev
+cp .env.example .env        # fill in CAN-SPAM fields at minimum
+bun run dev                 # http://127.0.0.1:3000
 ```
 
-`DRY_RUN` defaults to **on**. Sending requires setting `DRY_RUN=0` explicitly.
+Form assist also needs a browser (~150 MB, once): `bunx playwright install chromium`.
 
-### Deliverability, before you send anything real
+## How it works
 
-Sending a few hundred cold emails from a cold personal Gmail will land you in
-spam permanently. Non-negotiables:
+The Chamber directory publishes **no email addresses** — its contact slot is a
+Chamber-relayed form. So outreach takes two stages:
 
-- a dedicated sending domain with SPF, DKIM, and DMARC
-- the warm-up ramp (`SEND_RAMP`, default 5→50/day)
-- throttling with jitter (`SEND_INTERVAL_SECONDS`, default 180s)
-- a CAN-SPAM footer: real physical address + working unsubscribe.
-  `assertSendable()` refuses to send if these are blank.
+```
+Chamber directory   →  companies + websites     Start Chamber scrape
+each company's site →  email addresses, scored  Find emails
+no address          →  its own contact form     bun run form:assist <id>
+```
 
-## Build order
+Then, per company: **verify it** as a target → **verify the address** →
+**choose which address** → **choose a template** → **queue it** (or record a
+form contact). The preview shows exactly what will be sent, and the send button
+lists whatever is still missing.
 
-1. `scrape/chamber.ts` — `syncAll()` upsert; verify company counts
-2. `web/routes.ts` — the review queue table (you need to *see* the scrape)
-3. `scrape/discover.ts` — email resolution from company sites
-4. `mail/render.ts` + template editor with per-company preview
-5. `mail/gmail.ts` — OAuth bootstrap, send-only scope
-6. `mail/queue.ts` — `drain()` with the five gates
-7. `forms/assist.ts` — semi-auto fallback
+| Channel | Measured hit rate |
+|---|---|
+| Email address found on the company's site | 8 of 10 |
+| Fillable contact form found | 7 of 8 |
 
-Each stage is reviewable in the UI before the next one runs. The human
-approval step between scrape and send is what stops a bad scrape from becoming
-500 embarrassing emails.
+We deliberately do not automate the Chamber's own "Send Email" relay: every
+message would carry the Chamber's name, and hundreds would trace back to one
+member.
+
+## Guarantees
+
+- **No duplicates within a campaign.** Enforced by partial unique indexes on
+  `(campaign, company_id)` and `(campaign, email_address)` — SQLite rejects a
+  second live send even if application logic is bypassed. Failed sends fall out
+  of the index, so retries still work.
+- **No re-send after a crash.** A row is claimed before Gmail is called; if the
+  process dies mid-send, the row is failed with instructions to check your Sent
+  folder — never retried automatically.
+- **Opt-outs are honored everywhere.** The Do-not-contact list blocks email
+  sends, recorded form contacts, and the ready lists.
+- **Nothing sends by accident.** `DRY_RUN` is on by default, and sending refuses
+  to start without the CAN-SPAM fields.
+
+Campaigns scope the dedup guarantee, so starting a new one (on **Past
+companies**) is how you deliberately re-contact partners about a new event.
+
+## Security model
+
+Single user, this machine only. The server binds to `127.0.0.1` and has **no
+login** — don't change `HOST` to expose it. Form posts are CSRF-protected,
+pages refuse to be framed, and OAuth `state` is verified.
+
+## Data
+
+Everything lives in `data/chembot.db`, resolved from the project root wherever
+the server is started. SQLite's WAL survives a hard kill.
+
+```sh
+bun run backup              # timestamped snapshot → data/backups/
+```
+
+## Commands
+
+| Command | Does |
+|---|---|
+| `bun run dev` | UI with reload on change |
+| `bun run start` | UI |
+| `bun run scrape:chamber` | Chamber sync from the terminal |
+| `bun run scrape:emails` | Email discovery from the terminal |
+| `bun run form:assist <id>` | Open a company's contact form, pre-filled |
+| `bun run send:drain` | Drain the send queue (honors `DRY_RUN`) |
+| `bun run backup` | Snapshot the database |
+| `bun test` | Tests (in-memory database only) |
+
+## Before sending real email
+
+1. **Gmail:** create an OAuth *Desktop app* client at
+   console.cloud.google.com, put its ID and secret in `.env`, then click
+   **connect Gmail**. The scope is `gmail.send`, which cannot read your inbox.
+2. **Deliverability:** a few hundred cold emails from a cold personal Gmail will
+   land in spam permanently. Use a dedicated domain with SPF, DKIM, and DMARC,
+   and keep the warm-up ramp.
+3. **CAN-SPAM:** a real postal address and a working unsubscribe address.
+   Record opt-outs within 10 business days.
+4. Set `DRY_RUN=0`, send **one** message to yourself, and read what arrived.
+
+The Gmail send has not yet been run against Google — step 4 is its first real test.
+
+## Development
+
+```sh
+bun test
+bunx tsc --noEmit
+```
+
+Tests run against an in-memory database; `tests/setup.ts` is preloaded so no
+test can reach `data/chembot.db`. See [CHANGELOG.md](CHANGELOG.md) for release
+notes and known limitations, and [STATUS.md](STATUS.md) for design decisions.
