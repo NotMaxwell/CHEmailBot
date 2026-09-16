@@ -1,5 +1,80 @@
 # Changelog
 
+## [1.3.0] — 2026-09-15
+
+### Added
+- **Accounts.** Every page except `/login` is behind an auth gate. Passwords are
+  argon2id via `Bun.password`; sessions are server-side rows storing only a
+  SHA-256 of the cookie token, so a copied database file hands over no live
+  sessions. The first account created becomes an admin — there is no self-signup.
+  Admins add accounts, reset passwords, promote, and deactivate; the last active
+  admin cannot be demoted or deactivated. Changing a password or deactivating an
+  account ends its sessions at once.
+- **Send attribution.** `sends.student_id` records who queued a message, and the
+  company gains a `Student: <name>` tag when it actually sends (or immediately
+  for a recorded form contact), so the existing tag filter on *Past companies*
+  answers "what did this student work on?". Accounts with sends against them can
+  be deactivated but not deleted.
+- **The sender name now autofills from the signed-in account.** Resolution is
+  per-company override → signed-in student → `SENDER_NAME`. A sponsor's reply
+  reaches the person who wrote to them; the mailbox is unchanged.
+
+### Removed
+- The unsubscribe footer line and the `List-Unsubscribe` header, along with the
+  `{{unsubscribe}}` merge field and the `UNSUBSCRIBE_MAILTO` requirement. This
+  outreach is a sponsorship solicitation rather than commercial advertising.
+  Opt-outs are handled by the do-not-contact list, which still blocks at send
+  time and is now the only opt-out path — nothing reaches it automatically.
+
+### Verified
+- **The Gmail send ran against Google for the first time** and was delivered to
+  an external provider, closing the one gap 1.0.0 shipped with. OAuth, refresh,
+  rendering, and DKIM-signed delivery all confirmed end to end.
+
+## [1.2.0] — 2026-09-15
+
+### Added
+- **Campaigns & templates tab.** One place for the two decisions you make
+  before a run. Campaign switching moved off *Past companies* (a page about the
+  past) and templates moved off their own tab; `/templates` redirects. The tab
+  lists every campaign with its sent/queued counts and lets you delete an
+  unused one.
+- **A default template per campaign.** A company with no template of its own
+  inherits it, so step 4 is one dropdown instead of one per company. The
+  company page says whether the template was chosen there or inherited, and the
+  preview always shows what would actually send.
+- **Bulk template actions**: apply to companies with none, apply to all, or
+  clear every choice so they fall back to the default. All three skip rejected
+  companies and anything already queued or sent in the campaign.
+- **Per-company sender name.** A box on the company page sets who signs the
+  message; it drives `{{sender_name}}`, the footer signature, and the From
+  display name, and is frozen onto the send row at queue time. Blank falls back
+  to `SENDER_NAME`. The postal address and unsubscribe route are unaffected.
+- `bun run test:self` — renders a message to `TEST_EMAIL` through the real send
+  path and prints the headers and body; `--send` transmits it (refused while
+  `DRY_RUN=1`). Writes nothing: no send row, no budget, no dedup slot.
+- [SETUP.md](SETUP.md): the full Gmail/Workspace walkthrough, console side and
+  computer side, with a troubleshooting table keyed by Google's error strings.
+
+### Fixed
+- **Email discovery no longer dies silently.** One company's crawl throwing
+  ended the entire pass, reporting the failure only to the server console — the
+  page just stopped updating, which looks identical to a job still working.
+  Failures are now isolated per company, the run continues, and the outcome
+  (crawled, found, and which sites failed) is shown on the review queue.
+- Discovery progress shows a time estimate, so a legitimately long run is
+  distinguishable from a hung one.
+
+### Changed
+- `README.md` corrected: the Gmail OAuth client is a **Web application**, not a
+  Desktop app — a Desktop client does not match the `/oauth/callback` redirect
+  URI that `.env.example` has always specified.
+
+### Note
+- `bun run dev` restarts on any change under `src/`, which cancels an in-flight
+  background scrape. Long discovery runs are better started with
+  `bun run scrape:emails` in their own terminal.
+
 ## [1.1.0] — 2026-09-15
 
 ### Added
