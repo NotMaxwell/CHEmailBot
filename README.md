@@ -17,6 +17,8 @@ bun run dev                 # http://127.0.0.1:3000
 
 Form assist also needs a browser (~150 MB, once): `bunx playwright install chromium`.
 
+Sending needs Gmail credentials on top of that — see [SETUP.md](SETUP.md).
+
 ## How it works
 
 The Chamber directory publishes **no email addresses** — its contact slot is a
@@ -32,6 +34,11 @@ Then, per company: **verify it** as a target → **verify the address** →
 **choose which address** → **choose a template** → **queue it** (or record a
 form contact). The preview shows exactly what will be sent, and the send button
 lists whatever is still missing.
+
+Set the campaign and its default template once on **Campaigns & templates**, and
+every company inherits that template — so the per-company step 4 is only for the
+ones you want to say something different to. Each company can also carry its own
+sender name, which signs the message and sets the From display name.
 
 | Channel | Measured hit rate |
 |---|---|
@@ -56,14 +63,32 @@ member.
 - **Nothing sends by accident.** `DRY_RUN` is on by default, and sending refuses
   to start without the CAN-SPAM fields.
 
-Campaigns scope the dedup guarantee, so starting a new one (on **Past
-companies**) is how you deliberately re-contact partners about a new event.
+Campaigns scope the dedup guarantee, so starting a new one (on **Campaigns &
+templates**) is how you deliberately re-contact partners about a new event.
+
+## Accounts
+
+Every page except sign-in requires an account, and **every send is attributed to
+the person who made it** — their name signs the email and sets the From display
+name, the send row records them, and the company picks up a `Student: <name>`
+tag so the history page's tag filter answers "what did Alice send?".
+
+The first account created is an admin; only an admin can add accounts or reset a
+password, so there is no self-signup on a tool that reaches real sponsors.
+Passwords are argon2id (`Bun.password`), sessions are server-side rows keyed by
+a SHA-256 of the cookie token, and changing a password or deactivating an
+account ends its sessions immediately.
 
 ## Security model
 
-Single user, this machine only. The server binds to `127.0.0.1` and has **no
-login** — don't change `HOST` to expose it. Form posts are CSRF-protected,
-pages refuse to be framed, and OAuth `state` is verified.
+One team, this machine only. The server binds to `127.0.0.1` — don't change
+`HOST` to expose it. Form posts are CSRF-protected, pages refuse to be framed,
+and OAuth `state` is verified.
+
+The login is **attribution, not a perimeter**: anyone with a shell on this
+machine can read `data/chembot.db` and `.env` directly. It stops a student
+filing work under someone else's name; it does not make the app safe to put on
+a network.
 
 ## Data
 
@@ -100,23 +125,27 @@ bun run docker:down
 | `bun run dev` | UI with reload on change |
 | `bun run start` | UI |
 | `bun run scrape:chamber` | Chamber sync from the terminal |
-| `bun run scrape:emails` | Email discovery from the terminal |
+| `bun run scrape:emails` | Email discovery from the terminal — survives a dev-server restart |
 | `bun run form:assist <id>` | Open a company's contact form, pre-filled |
 | `bun run send:drain` | Drain the send queue (honors `DRY_RUN`) |
+| `bun run test:self` | Preview one message to `TEST_EMAIL`; `--send` to really send it |
 | `bun run backup` | Snapshot the database |
 | `bun test` | Tests (in-memory database only) |
 
 ## Before sending real email
 
-1. **Gmail:** create an OAuth *Desktop app* client at
+1. **Gmail:** create an OAuth *Web application* client at
    console.cloud.google.com, put its ID and secret in `.env`, then click
    **connect Gmail**. The scope is `gmail.send`, which cannot read your inbox.
+   Full walkthrough, console side and computer side: [SETUP.md](SETUP.md).
 2. **Deliverability:** a few hundred cold emails from a cold personal Gmail will
    land in spam permanently. Use a dedicated domain with SPF, DKIM, and DMARC,
    and keep the warm-up ramp.
 3. **CAN-SPAM:** a real postal address and a working unsubscribe address.
    Record opt-outs within 10 business days.
-4. Set `DRY_RUN=0`, send **one** message to yourself, and read what arrived.
+4. Preview with `bun run test:self`, then set `DRY_RUN=0` and
+   `bun run test:self --send` to put **one** real message in your own inbox.
+   Read what arrived, headers included.
 
 The Gmail send has not yet been run against Google — step 4 is its first real test.
 
@@ -128,5 +157,9 @@ bunx tsc --noEmit
 ```
 
 Tests run against an in-memory database; `tests/setup.ts` is preloaded so no
-test can reach `data/chembot.db`. See [CHANGELOG.md](CHANGELOG.md) for release
+test can reach `data/chembot.db`.
+
+`bun run dev` reloads on any change under `src/`, which **cancels an in-flight
+background scrape**. Start long discovery runs with `bun run scrape:emails` in
+their own terminal instead. See [CHANGELOG.md](CHANGELOG.md) for release
 notes and known limitations, and [STATUS.md](STATUS.md) for design decisions.

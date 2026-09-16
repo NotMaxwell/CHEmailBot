@@ -11,6 +11,8 @@
     "form:assist": "bun src/forms/assist.ts",
     "test": "bun test",
     "send:drain": "bun run src/mail/queue.ts",
+    "test:self": "bun src/selftest.ts",
+    "demo:seed": "bun src/seed-demo.ts",
     "backup": "bun src/backup.ts",
     "docker:up": "docker compose up -d --build",
     "docker:logs": "docker compose logs -f",
