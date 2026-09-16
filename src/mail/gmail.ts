@@ -112,10 +112,13 @@ const encodeHeader = (v: string) =>
   /^[\x20-\x7E]*$/.test(v) ? v : `=?UTF-8?B?${b64(v)}?=`;
 
 /** Builds an RFC 2822 message. Body is base64 so long lines and UTF-8 are safe. */
-export function buildRaw(to: string, subject: string, body: string): string {
-  const from = config.canSpam.senderName
-    ? `${encodeHeader(config.canSpam.senderName)} <${config.gmail.sender}>`
-    : config.gmail.sender;
+export function buildRaw(
+  to: string, subject: string, body: string, fromName?: string,
+): string {
+  // The address is always the authorized mailbox; only the display name varies,
+  // so the From line matches whoever signed the body.
+  const who = fromName?.trim() || config.canSpam.senderName;
+  const from = who ? `${encodeHeader(who)} <${config.gmail.sender}>` : config.gmail.sender;
 
   const headers = [
     `From: ${from}`,
@@ -134,14 +137,14 @@ export function buildRaw(to: string, subject: string, body: string): string {
 }
 
 export async function sendMessage(
-  to: string, subject: string, body: string,
+  to: string, subject: string, body: string, fromName?: string,
 ): Promise<SendResult> {
   const token = await accessToken();
   const res = await fetch(SEND_ENDPOINT, {
     method: "POST",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
     signal: AbortSignal.timeout(30_000),   // recoverInterrupted() relies on a bound
-    body: JSON.stringify({ raw: b64url(buildRaw(to, subject, body)) }),
+    body: JSON.stringify({ raw: b64url(buildRaw(to, subject, body, fromName)) }),
   });
   const json = await res.json();
   if (!res.ok) {

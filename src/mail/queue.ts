@@ -14,7 +14,7 @@ import { config, assertSendable } from "../config.ts";
 import { db, isSuppressed, alreadyContacted, priorContact, currentCampaign,
          companySuppression } from "../db.ts";
 import { getCompany, emailsFor, addTag, resolveTemplateFor } from "../repo.ts";
-import { render, contextFor, footer } from "./render.ts";
+import { render, contextFor, footer, senderNameFor } from "./render.ts";
 import { sendMessage } from "./gmail.ts";
 
 /** Daily cap for day N of the campaign, clamped to the ramp's last value. */
@@ -130,15 +130,16 @@ export function enqueue(companyId: number): void {
   const template = resolveTemplateFor(company)!.template;
 
   const ctx = contextFor(company);
+  const who = senderNameFor(company);
   const subject = render(template.subject, ctx);
-  const body = render(template.body, ctx) + footer();
+  const body = render(template.body, ctx) + footer(who);
 
   try {
     db.query(
       `INSERT INTO sends (company_id, email_address, template_id, subject, body,
-                          channel, status, campaign)
-       VALUES (?, ?, ?, ?, ?, 'gmail', 'queued', ?)`,
-    ).run(companyId, primary.address, template.id, subject, body, currentCampaign());
+                          channel, status, campaign, sender_name)
+       VALUES (?, ?, ?, ?, ?, 'gmail', 'queued', ?, ?)`,
+    ).run(companyId, primary.address, template.id, subject, body, currentCampaign(), who);
   } catch (err) {
     // The partial unique index is the real guarantee; translate it for the UI.
     if (String(err).includes("UNIQUE constraint failed")) {
@@ -162,15 +163,17 @@ export function recordFormSend(companyId: number): void {
   const subject = template ? render(template.subject, ctx) : "(contact form)";
   db.query(
     `INSERT INTO sends (company_id, email_address, template_id, subject, body,
-                        channel, status, sent_at, campaign)
-     VALUES (?, ?, ?, ?, ?, 'form', 'sent', datetime('now'), ?)`,
+                        channel, status, sent_at, campaign, sender_name)
+     VALUES (?, ?, ?, ?, ?, 'form', 'sent', datetime('now'), ?, ?)`,
   ).run(
     companyId,
     `form:${company.chamber_slug}`,           // no address exists; keep the row unique
     template?.id ?? null,
     subject,
-    template ? render(template.body, ctx) + footer() : "(submitted via company contact form)",
+    template ? render(template.body, ctx) + footer(senderNameFor(company))
+             : "(submitted via company contact form)",
     currentCampaign(),
+    senderNameFor(company),
   );
   tagAsMessaged(companyId, currentCampaign(), subject);
 }
@@ -182,7 +185,8 @@ export interface DrainReport {
 }
 
 interface QueuedRow { id: number; company_id: number; email_address: string;
-  subject: string; body: string; attempts: number; campaign: string }
+  subject: string; body: string; attempts: number; campaign: string;
+  sender_name: string | null }
 
 /**
  * Drain the queue: one message per jittered interval, stopping at the day's cap.
@@ -202,7 +206,7 @@ export async function drain(
   };
 
   const queued = db.query<QueuedRow, []>(
-    `SELECT id, company_id, email_address, subject, body, attempts, campaign
+    `SELECT id, company_id, email_address, subject, body, attempts, campaign, sender_name
      FROM sends WHERE status = 'queued' AND attempted_at IS NULL
      ORDER BY queued_at`).all();
 
@@ -239,7 +243,8 @@ export async function drain(
     if (claimed.changes !== 1) continue;
 
     try {
-      const res = await sendMessage(row.email_address, row.subject, row.body);
+      const res = await sendMessage(row.email_address, row.subject, row.body,
+                                    row.sender_name ?? undefined);
       db.query(
         `UPDATE sends SET status='sent', gmail_message_id=?, gmail_thread_id=?,
          sent_at=datetime('now'), error=NULL WHERE id=?`,

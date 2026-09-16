@@ -13,6 +13,8 @@ export interface Company {
   category: string | null;
   /** Template chosen in the review UI (step 4). */
   template_id: number | null;
+  /** Who signs this company's message. Null falls back to SENDER_NAME. */
+  sender_name: string | null;
   review_status: "new" | "approved" | "rejected";
   scraped_at: string;
 }

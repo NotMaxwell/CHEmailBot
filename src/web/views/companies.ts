@@ -110,10 +110,12 @@ export function companyPage(
   priorWarning: string | null = null,
   suppression: string | null = null,
   opts: {
+    /** SENDER_NAME from .env -- what signs the message when no override is set. */
+    defaultSenderName: string;
     campaign: string;
     /** What will actually send, and whether it was chosen here or inherited. */
     resolvedTemplate: { name: string; source: "company" | "campaign" } | null;
-  } = { campaign: "", resolvedTemplate: null },
+  } = { defaultSenderName: "", campaign: "", resolvedTemplate: null },
 ): string {
   const primary = emails.find((e) => e.is_primary === 1);
   const site = normalizeWebsite(c.website);   // only ever link to http(s)
@@ -167,6 +169,21 @@ ${contacted ? `<div class="banner"><b>Already ${esc(contacted.status)}</b>
     <input type="email" name="address" placeholder="name@company.com" required>
     <button>Add manually (counts as verified)</button>
   </form>
+</div>
+
+<div class="card">
+  <h2>Who it comes from</h2>
+  <form method="post" action="/company/${c.id}/sender" class="row">
+    <input type="text" name="sender_name" maxlength="80" style="min-width:14rem"
+           value="${esc(c.sender_name ?? "")}"
+           placeholder="${esc(opts.defaultSenderName)}" aria-label="Your name on this message">
+    <button>${c.sender_name ? "Update name" : "Use this name"}</button>
+    ${c.sender_name ? `<span class="pill ok">signed ${esc(c.sender_name)}</span>`
+                    : `<span class="mut">defaulting to <b>${esc(opts.defaultSenderName)}</b> from .env</span>`}
+  </form>
+  <p class="mut" style="margin:.6rem 0 0">Signs the message and sets the name on the
+    From line. The address itself is always the connected mailbox, and the postal
+    address and unsubscribe route stay as configured. Leave it blank to use the default.</p>
 </div>
 
 <div class="card">

@@ -13,7 +13,7 @@ import { db, currentCampaign, switchCampaign, companySuppression,
 import { config } from "../config.ts";
 import { syncAll } from "../scrape/chamber.ts";
 import { discoverAll, etaSeconds, type DiscoverProgress } from "../scrape/discover.ts";
-import { render, contextFor, footer } from "../mail/render.ts";
+import { render, contextFor, footer, senderNameFor } from "../mail/render.ts";
 import { enqueue, drain, recordFormSend, blockersFor, peekBudget,
          priorContactWarning } from "../mail/queue.ts";
 import { authUrl, exchangeCode, isAuthorized } from "../mail/gmail.ts";
@@ -140,7 +140,7 @@ routes.get("/company/:id", (c) => {
     try {
       preview = {
         subject: render(resolved.template.subject, ctx),
-        body: render(resolved.template.body, ctx) + footer(),
+        body: render(resolved.template.body, ctx) + footer(senderNameFor(company)),
       };
     } catch (e) {
       preview = { subject: "(template error)", body: String(e) };
@@ -163,7 +163,8 @@ routes.get("/company/:id", (c) => {
   return c.html(layout(company.name,
     companyPage(company, emails, repo.listTemplates(), preview, sent ?? null, blockers,
                 c.req.query("err") ?? null, priorContactWarning(id), companySuppression(id),
-                { campaign: currentCampaign(),
+                { defaultSenderName: config.canSpam.senderName,
+                  campaign: currentCampaign(),
                   resolvedTemplate: resolved && {
                     name: resolved.template.name, source: resolved.source } }) +
     tagSection(id, repo.tagsFor(id), repo.listTags()),
@@ -196,6 +197,13 @@ routes.post("/email/:id/verify", async (c) => {
   if (!owner) return c.notFound();
   repo.setVerified(emailId, (await c.req.parseBody())["verified"] === "1");
   return c.redirect(`/company/${owner.company_id}`);
+});
+
+routes.post("/company/:id/sender", async (c) => {
+  const id = int(c.req.param("id"));
+  const b = await c.req.parseBody();
+  return c.redirect(await act(`/company/${id}`, () =>
+    repo.setSenderName(id, String(b["sender_name"] ?? ""))));
 });
 
 routes.post("/company/:id/template", async (c) => {

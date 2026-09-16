@@ -1,5 +1,5 @@
-// Campaign default templates and the bulk template actions behind the
-// Campaigns & templates tab.
+// Campaign defaults, per-company sender names, and the bulk template actions
+// added with the Campaigns & templates tab.
 import { expect, test } from "bun:test";
 
 process.env.DB_PATH = ":memory:";
@@ -11,7 +11,9 @@ process.env.DRY_RUN = "1";
 const { db, setSetting, setCampaignDefaultTemplate, campaignDefaultTemplate } =
   await import("../src/db.ts");
 const repo = await import("../src/repo.ts");
-const { blockersFor } = await import("../src/mail/queue.ts");
+const { blockersFor, enqueue } = await import("../src/mail/queue.ts");
+const { footer, senderNameFor, contextFor } = await import("../src/mail/render.ts");
+const { buildRaw } = await import("../src/mail/gmail.ts");
 const { routes } = await import("../src/web/routes.ts");
 
 // Own campaign and id range, so the shared in-memory DB can't collide with the
@@ -93,6 +95,50 @@ test("clearing choices sends everyone back to the campaign default", () => {
   repo.clearCompanyTemplates(CAMPAIGN);
   expect(repo.getCompany(700)!.template_id).toBeNull();
   expect(repo.resolveTemplateFor(repo.getCompany(700)!)!.source).toBe("campaign");
+});
+
+// --- per-company sender name ------------------------------------------------
+
+test("with no override the signature and From name come from .env", () => {
+  repo.setSenderName(700, "");
+  expect(senderNameFor(company())).toBe("Test Sender");
+  expect(footer()).toContain("Test Sender");
+  expect(buildRaw("to@x.example", "s", "b")).toContain("From: Test Sender <");
+});
+
+test("an override changes the signature, the merge field, and the From name", () => {
+  repo.setSenderName(700, "Max M");
+  const c = company();
+  expect(senderNameFor(c)).toBe("Max M");
+  expect(contextFor(c).sender_name).toBe("Max M");
+  expect(footer("Max M")).toContain("Max M");
+  expect(buildRaw("to@x.example", "s", "b", "Max M")).toContain("From: Max M <");
+});
+
+test("the override never rewrites the postal address or unsubscribe route", () => {
+  const f = footer("Max M");
+  expect(f).toContain("1 Test St, Huntsville AL");
+  expect(f).toContain("unsub@test.example");
+});
+
+test("a whitespace-only override falls back rather than sending unsigned", () => {
+  repo.setSenderName(700, "   ");
+  expect(senderNameFor(company())).toBe("Test Sender");
+  expect(company().sender_name).toBeNull();
+});
+
+test("an absurdly long sender name is rejected", () => {
+  expect(() => repo.setSenderName(700, "x".repeat(81))).toThrow(/too long/);
+});
+
+test("the queued send freezes the sender name it was built with", () => {
+  repo.setSenderName(700, "Max M");
+  setCampaignDefaultTemplate(CAMPAIGN, ALT);
+  enqueue(700);
+  const row = db.query<{ sender_name: string; body: string }, [number]>(
+    `SELECT sender_name, body FROM sends WHERE company_id = ? ORDER BY id DESC LIMIT 1`).get(700)!;
+  expect(row.sender_name).toBe("Max M");
+  expect(row.body).toContain("Max M");
 });
 
 // --- the new tab ------------------------------------------------------------

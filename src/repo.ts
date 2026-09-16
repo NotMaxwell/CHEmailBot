@@ -201,6 +201,16 @@ export function setPrimary(companyId: number, emailId: number) {
 }
 
 /** Step 4: choose the template for this company. */
+/**
+ * Who signs this company's message. Empty clears the override, so the company
+ * goes back to SENDER_NAME from .env rather than being signed by nobody.
+ */
+export function setSenderName(companyId: number, name: string): void {
+  const clean = name.trim();
+  if (clean.length > 80) throw new Error("Sender name is too long (80 characters max).");
+  db.query(`UPDATE companies SET sender_name = ? WHERE id = ?`).run(clean || null, companyId);
+}
+
 export function setTemplate(companyId: number, templateId: number) {
   db.query(`UPDATE companies SET template_id=? WHERE id=?`).run(templateId, companyId);
 }

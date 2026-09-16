@@ -148,6 +148,12 @@ ensureColumn("sends", "campaign", "TEXT NOT NULL DEFAULT 'initial-outreach'");
 ensureColumn("campaigns", "default_template_id", "INTEGER REFERENCES templates(id)");
 ensureColumn("sends", "attempted_at", "TEXT");
 ensureColumn("companies", "emails_checked_at", "TEXT");
+// Who signs the message. Null means "use SENDER_NAME from .env", which is
+// what every company did before this column existed.
+ensureColumn("companies", "sender_name", "TEXT");
+// Copied onto the send at queue time so the From line still matches the
+// signature months later, even if the company row is edited afterwards.
+ensureColumn("sends", "sender_name", "TEXT");
 
 db.exec(`
   -- carry the single legacy category into the many-to-many table
