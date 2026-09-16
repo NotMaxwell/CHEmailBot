@@ -14,7 +14,8 @@
     "backup": "bun src/backup.ts",
     "docker:up": "docker compose up -d --build",
     "docker:logs": "docker compose logs -f",
-    "docker:down": "docker compose down"
+    "docker:down": "docker compose down",
+    "docker:restart": "docker compose up -d --force-recreate"
   },
   "dependencies": {
     "hono": "^4.6.0",
