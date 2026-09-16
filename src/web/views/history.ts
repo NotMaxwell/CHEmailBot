@@ -24,23 +24,12 @@ ${err ? `<div class="banner" style="border-left-color:var(--bad)"><b>${esc(err)}
 
 <div class="card">
   <div class="row">
-    <b>Current campaign</b>
-    <form method="post" action="/history/campaign" class="row" style="gap:.4rem">
-      <select name="campaign">
-        ${campaigns.map((c) => `<option value="${esc(c.campaign)}" ${
-          c.campaign === current ? "selected" : ""}>${esc(c.campaign)}${
-          c.n ? ` (${c.n} sent)` : " (unused)"}</option>`).join("")}
-      </select>
-      <button>Switch</button>
-    </form>
-    <form method="post" action="/history/campaign" class="row" style="gap:.4rem">
-      <input type="text" name="new_campaign" placeholder="new campaign name" maxlength="60">
-      <button>Create &amp; switch</button>
-    </form>
+    <b>Current campaign</b> <span class="pill ok">${esc(current)}</span>
+    <a href="/campaigns">Switch or create one →</a>
   </div>
-  <p class="mut" style="margin:.6rem 0 0">New sends file under the current campaign.
-    Dedup is scoped to it, so switching is what lets you deliberately re-message a
-    company a previous campaign already reached.</p>
+  <p class="mut" style="margin:.6rem 0 0">This page is the record of who has been
+    contacted. Choosing the campaign new sends file under, and the template they use,
+    lives on <a href="/campaigns">Campaigns &amp; templates</a>.</p>
 </div>
 
 ${openReminders ? `<div class="banner"><b>${openReminders} open reminder${

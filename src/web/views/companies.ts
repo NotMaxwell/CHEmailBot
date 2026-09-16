@@ -109,6 +109,11 @@ export function companyPage(
   err: string | null = null,
   priorWarning: string | null = null,
   suppression: string | null = null,
+  opts: {
+    campaign: string;
+    /** What will actually send, and whether it was chosen here or inherited. */
+    resolvedTemplate: { name: string; source: "company" | "campaign" } | null;
+  } = { campaign: "", resolvedTemplate: null },
 ): string {
   const primary = emails.find((e) => e.is_primary === 1);
   const site = normalizeWebsite(c.website);   // only ever link to http(s)
@@ -168,11 +173,22 @@ ${contacted ? `<div class="banner"><b>Already ${esc(contacted.status)}</b>
   <h2>4 · Select template</h2>
   <form method="post" action="/company/${c.id}/template" class="row">
     <select name="template_id">
+      ${c.template_id ? "" : `<option value="" selected>— campaign default —</option>`}
       ${templates.map((t) =>
         `<option value="${t.id}" ${t.id === c.template_id ? "selected" : ""}>${esc(t.name)}</option>`).join("")}
     </select>
     <button>Use this template</button>
+    ${opts.resolvedTemplate
+      ? opts.resolvedTemplate.source === "company"
+        ? `<span class="pill ok">chosen here</span>`
+        : `<span class="pill mut">inherited from campaign ${esc(opts.campaign)}</span>`
+      : `<span class="pill warn">none — pick one, or set a default on
+         <a href="/campaigns">Campaigns &amp; templates</a></span>`}
   </form>
+  ${opts.resolvedTemplate?.source === "campaign"
+    ? `<p class="mut" style="margin:.6rem 0 0">Sending <b>${esc(opts.resolvedTemplate.name)}</b>,
+       the default for this campaign. Choosing one above overrides it for this company only.</p>`
+    : ""}
 </div>
 
 ${preview ? `<div class="card">

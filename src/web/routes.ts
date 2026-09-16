@@ -5,10 +5,11 @@ import { HTTPException } from "hono/http-exception";
 import { layout, esc } from "./views/layout.ts";
 import { queuePage, companyPage } from "./views/companies.ts";
 import { historyPage, tagSection } from "./views/history.ts";
-import { templatesPage } from "./views/templates.ts";
+import { campaignsPage } from "./views/campaigns.ts";
 import { suppressionsPage } from "./views/suppressions.ts";
 import * as repo from "../repo.ts";
-import { db, currentCampaign, switchCampaign, companySuppression } from "../db.ts";
+import { db, currentCampaign, switchCampaign, companySuppression,
+         setCampaignDefaultTemplate } from "../db.ts";
 import { config } from "../config.ts";
 import { syncAll } from "../scrape/chamber.ts";
 import { discoverAll, etaSeconds, type DiscoverProgress } from "../scrape/discover.ts";
@@ -129,13 +130,18 @@ routes.get("/company/:id", (c) => {
   if (!company) return c.notFound();
 
   const emails = repo.emailsFor(id);
-  const template = company.template_id ? repo.getTemplate(company.template_id) : null;
+  // The company's own choice if it made one, otherwise the campaign default --
+  // the preview must show what would ACTUALLY send, not just an explicit pick.
+  const resolved = repo.resolveTemplateFor(company);
 
   let preview: { subject: string; body: string } | null = null;
-  if (template) {
+  if (resolved) {
     const ctx = contextFor(company);
     try {
-      preview = { subject: render(template.subject, ctx), body: render(template.body, ctx) + footer() };
+      preview = {
+        subject: render(resolved.template.subject, ctx),
+        body: render(resolved.template.body, ctx) + footer(),
+      };
     } catch (e) {
       preview = { subject: "(template error)", body: String(e) };
     }
@@ -156,7 +162,10 @@ routes.get("/company/:id", (c) => {
 
   return c.html(layout(company.name,
     companyPage(company, emails, repo.listTemplates(), preview, sent ?? null, blockers,
-                c.req.query("err") ?? null, priorContactWarning(id), companySuppression(id)) +
+                c.req.query("err") ?? null, priorContactWarning(id), companySuppression(id),
+                { campaign: currentCampaign(),
+                  resolvedTemplate: resolved && {
+                    name: resolved.template.name, source: resolved.source } }) +
     tagSection(id, repo.tagsFor(id), repo.listTags()),
     repo.stats()));
 });
@@ -247,9 +256,9 @@ routes.get("/history", (c) => {
     repo.stats()));
 });
 
+// Superseded by /campaigns/switch. Kept so a stale open tab's form still works.
 routes.post("/history/campaign", async (c) => {
   const b = await c.req.parseBody();
-  // Two submit paths land here: the picker, and the create-new field.
   const name = String(b["new_campaign"] ?? "").trim() || String(b["campaign"] ?? "");
   return c.redirect(await act("/history", () => switchCampaign(name)));
 });
@@ -276,27 +285,83 @@ routes.post("/company/:id/tag/:tagId/done", async (c) => {
   return c.redirect(`/company/${id}`);
 });
 
+// --- campaigns & templates --------------------------------------------------
+
+routes.get("/campaigns", (c) => {
+  const current = currentCampaign();
+  const defaultId = repo.campaignDefaultTemplate(current);
+  const counts = repo.templateAssignmentCounts();
+  return c.html(layout("Campaigns & templates", campaignsPage({
+    campaigns: repo.listCampaigns(),
+    templates: repo.listTemplatesWithUsage(),
+    current,
+    // Only meaningful when a default exists: with none, nobody inherits.
+    inheriting: defaultId ? counts.without : 0,
+    withOwn: counts.with,
+    err: c.req.query("err") ?? null,
+    notice: c.req.query("ok") ?? null,
+  }), repo.stats()));
+});
+
+routes.post("/campaigns/switch", async (c) => {
+  const b = await c.req.parseBody();
+  // Two submit paths land here: the picker, and the create-new field.
+  const name = String(b["new_campaign"] ?? "").trim() || String(b["campaign"] ?? "");
+  return c.redirect(await act("/campaigns", () => switchCampaign(name)));
+});
+
+routes.post("/campaigns/default-template", async (c) => {
+  const b = await c.req.parseBody();
+  const raw = String(b["template_id"] ?? "").trim();
+  return c.redirect(await act("/campaigns", () =>
+    setCampaignDefaultTemplate(String(b["campaign"] ?? currentCampaign()),
+                               raw === "" ? null : int(raw))));
+});
+
+routes.post("/campaigns/apply-template", async (c) => {
+  const b = await c.req.parseBody();
+  const scope = b["scope"] === "all" ? "all" : "missing";
+  try {
+    const n = repo.applyTemplateToCompanies(int(b["template_id"]), scope);
+    return c.redirect(`/campaigns?ok=${encodeURIComponent(
+      `Template applied to ${n} ${n === 1 ? "company" : "companies"}.`)}`);
+  } catch (e) { return c.redirect(fail("/campaigns", e)); }
+});
+
+routes.post("/campaigns/clear-templates", async (c) => {
+  try {
+    const n = repo.clearCompanyTemplates();
+    return c.redirect(`/campaigns?ok=${encodeURIComponent(
+      `Cleared ${n} ${n === 1 ? "choice" : "choices"}; they now follow the campaign default.`)}`);
+  } catch (e) { return c.redirect(fail("/campaigns", e)); }
+});
+
+routes.post("/campaigns/delete", async (c) => {
+  const b = await c.req.parseBody();
+  return c.redirect(await act("/campaigns", () => repo.deleteCampaign(String(b["campaign"] ?? ""))));
+});
+
 // --- templates --------------------------------------------------------------
 
-routes.get("/templates", (c) =>
-  c.html(layout("Templates", templatesPage(repo.listTemplates(), c.req.query("err") ?? null),
-    repo.stats())));
+// Templates moved into the campaign tab -- they are two halves of one setup
+// decision. Kept as a redirect so old bookmarks still land somewhere useful.
+routes.get("/templates", (c) => c.redirect("/campaigns"));
 
 routes.post("/templates", async (c) => {
   const b = await c.req.parseBody();
-  return c.redirect(await act("/templates", () =>
+  return c.redirect(await act("/campaigns", () =>
     repo.createTemplate(String(b["name"] ?? ""), String(b["subject"] ?? ""), String(b["body"] ?? ""))));
 });
 
 routes.post("/templates/:id", async (c) => {
   const b = await c.req.parseBody();
-  return c.redirect(await act("/templates", () =>
+  return c.redirect(await act("/campaigns", () =>
     repo.updateTemplate(int(c.req.param("id")),
       String(b["name"] ?? ""), String(b["subject"] ?? ""), String(b["body"] ?? ""))));
 });
 
 routes.post("/templates/:id/delete", async (c) =>
-  c.redirect(await act("/templates", () => repo.deleteTemplate(int(c.req.param("id"))))));
+  c.redirect(await act("/campaigns", () => repo.deleteTemplate(int(c.req.param("id"))))));
 
 // --- do not contact ---------------------------------------------------------
 

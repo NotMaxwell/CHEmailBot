@@ -46,7 +46,7 @@ ${opts.refresh ? '<meta http-equiv="refresh" content="4">' : ""}
   nav{flex-wrap:wrap} .scroll{overflow-x:auto}
   .banner{background:var(--card);border-left:3px solid var(--accent);padding:.6rem .8rem;margin-bottom:1rem}
 </style></head><body>
-<nav><a href="/">Review queue</a><a href="/history">Past companies</a><a href="/templates">Templates</a><a href="/suppressions">Do not contact</a><a href="/log">Send log</a></nav>
+<nav><a href="/">Review queue</a><a href="/campaigns">Campaigns &amp; templates</a><a href="/history">Past companies</a><a href="/suppressions">Do not contact</a><a href="/log">Send log</a></nav>
 ${stats ? `<ul class="steps">
   <li><span>1 · Scraped</span><b>${stats.companies}</b></li>
   <li><span>2 · Verified co.</span><b>${stats.approved}</b></li>

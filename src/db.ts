@@ -145,6 +145,7 @@ export function ensureColumn(table: string, column: string, decl: string): void 
 ensureColumn("emails", "verified", "INTEGER NOT NULL DEFAULT 0");
 ensureColumn("companies", "template_id", "INTEGER REFERENCES templates(id)");
 ensureColumn("sends", "campaign", "TEXT NOT NULL DEFAULT 'initial-outreach'");
+ensureColumn("campaigns", "default_template_id", "INTEGER REFERENCES templates(id)");
 ensureColumn("sends", "attempted_at", "TEXT");
 ensureColumn("companies", "emails_checked_at", "TEXT");
 
@@ -209,4 +210,27 @@ export function switchCampaign(name: string): string {
   db.query(`INSERT OR IGNORE INTO campaigns (name) VALUES (?)`).run(clean);
   setSetting("current_campaign", clean);
   return clean;
+}
+
+/**
+ * The campaign's fallback template: used by any company that has not had one
+ * chosen explicitly. Setting this once is what makes a 300-company campaign
+ * workable -- otherwise step 4 is a dropdown you touch 300 times.
+ *
+ * Null is a legitimate value and means "no fallback": companies must then each
+ * pick one, exactly as before this existed.
+ */
+export const campaignDefaultTemplate = (campaign = currentCampaign()): number | null =>
+  db.query<{ default_template_id: number | null }, [string]>(
+    `SELECT default_template_id FROM campaigns WHERE name = ?`).get(campaign)?.default_template_id ?? null;
+
+export function setCampaignDefaultTemplate(campaign: string, templateId: number | null): void {
+  if (templateId !== null) {
+    const exists = db.query<{ n: number }, [number]>(
+      `SELECT COUNT(*) n FROM templates WHERE id = ?`).get(templateId)?.n ?? 0;
+    if (!exists) throw new Error(`No template with id ${templateId}.`);
+  }
+  const res = db.query(`UPDATE campaigns SET default_template_id = ? WHERE name = ?`)
+    .run(templateId, campaign);
+  if (!res.changes) throw new Error(`No campaign named "${campaign}".`);
 }

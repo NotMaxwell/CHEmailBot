@@ -1,5 +1,6 @@
 // Every query the UI needs, in one place. Routes stay thin.
-import { db, nameKey, isSuppressed, currentCampaign, companySuppression } from "./db.ts";
+import { db, nameKey, isSuppressed, currentCampaign, companySuppression,
+         campaignDefaultTemplate, setCampaignDefaultTemplate } from "./db.ts";
 import type { Company, EmailCandidate, MergeContext } from "./types.ts";
 import { normalizeWebsite, hostOf } from "./url.ts";
 import { render } from "./mail/render.ts";
@@ -14,6 +15,18 @@ export interface CompanyRow extends Company {
   template_name: string | null;
   /** Every Chamber category the company is listed under, comma-joined. */
   categories: string | null;
+}
+
+export interface CampaignRow {
+  campaign: string;
+  /** Live contacts: queued + sent. This is what dedup counts. */
+  n: number;
+  sent: number;
+  queued: number;
+  last: string | null;
+  created_at: string;
+  default_template_id: number | null;
+  default_template_name: string | null;
 }
 
 /**
@@ -75,6 +88,91 @@ export const getTemplate = (id: number) =>
   db.query<{ id: number; name: string; subject: string; body: string }, [number]>(
     `SELECT * FROM templates WHERE id=?`,
   ).get(id);
+
+export interface TemplateRow {
+  id: number; name: string; subject: string; body: string;
+  /** Companies that picked this one explicitly (step 4). */
+  companies: number;
+  /** Messages already queued or sent with it, across all campaigns. */
+  messages: number;
+  /** Campaigns using it as their fallback, comma-joined. */
+  default_for: string | null;
+}
+
+/** listTemplates plus the usage figures that make "which of these is doing the
+ *  work?" answerable without opening each one. */
+export const listTemplatesWithUsage = (): TemplateRow[] =>
+  db.query<TemplateRow, []>(`
+    SELECT t.*,
+           (SELECT COUNT(*) FROM companies c WHERE c.template_id = t.id) AS companies,
+           (SELECT COUNT(*) FROM sends s WHERE s.template_id = t.id) AS messages,
+           (SELECT GROUP_CONCAT(c.name, ', ') FROM campaigns c
+             WHERE c.default_template_id = t.id) AS default_for
+    FROM templates t ORDER BY t.name COLLATE NOCASE`).all();
+
+/** How many live companies have their own template vs. none at all. Drives the
+ *  "N companies are inheriting it" line on the campaign tab. */
+export function templateAssignmentCounts(): { with: number; without: number } {
+  const r = db.query<{ w: number; wo: number }, []>(`
+    SELECT SUM(CASE WHEN template_id IS NOT NULL THEN 1 ELSE 0 END) AS w,
+           SUM(CASE WHEN template_id IS NULL     THEN 1 ELSE 0 END) AS wo
+    FROM companies WHERE review_status <> 'rejected'`).get();
+  return { with: r?.w ?? 0, without: r?.wo ?? 0 };
+}
+
+export type TemplateSource = "company" | "campaign";
+
+/**
+ * Which template a company will actually send with, and why.
+ *
+ * A company's own choice wins; otherwise it inherits the current campaign's
+ * default. Returning the SOURCE rather than just the template is what lets the
+ * UI say "inherited from campaign X" instead of silently showing a template the
+ * user never picked for this company.
+ */
+export function resolveTemplateFor(
+  company: Pick<Company, "template_id">, campaign = currentCampaign(),
+): { template: { id: number; name: string; subject: string; body: string }; source: TemplateSource } | null {
+  if (company.template_id) {
+    const own = getTemplate(company.template_id);
+    if (own) return { template: own, source: "company" };
+  }
+  const fallbackId = campaignDefaultTemplate(campaign);
+  if (!fallbackId) return null;
+  const fallback = getTemplate(fallbackId);
+  return fallback ? { template: fallback, source: "campaign" } : null;
+}
+
+/**
+ * Bulk step 4. "missing" only fills the gaps, which is the safe default;
+ * "all" overwrites choices already made, so the UI confirms before calling it.
+ * Companies already contacted in this campaign are skipped either way -- their
+ * copy is frozen on the send row and re-pointing them changes nothing.
+ */
+export function applyTemplateToCompanies(
+  templateId: number, scope: "missing" | "all", campaign = currentCampaign(),
+): number {
+  if (!getTemplate(templateId)) throw new Error(`No template with id ${templateId}.`);
+  const res = db.query(`
+    UPDATE companies SET template_id = ?
+     WHERE review_status <> 'rejected'
+       ${scope === "missing" ? "AND template_id IS NULL" : ""}
+       AND id NOT IN (SELECT company_id FROM sends
+                       WHERE campaign = ? AND status IN ('queued','sent'))`)
+    .run(templateId, campaign);
+  return Number(res.changes);
+}
+
+/** Clears every company's explicit choice, so they fall back to the campaign
+ *  default. The undo for an "apply to all" you regret. */
+export function clearCompanyTemplates(campaign = currentCampaign()): number {
+  const res = db.query(`
+    UPDATE companies SET template_id = NULL
+     WHERE template_id IS NOT NULL
+       AND id NOT IN (SELECT company_id FROM sends
+                       WHERE campaign = ? AND status IN ('queued','sent'))`).run(campaign);
+  return Number(res.changes);
+}
 
 // --- the five workflow actions ---------------------------------------------
 
@@ -308,15 +406,37 @@ export function listHistory(tagId?: number, campaign?: string): HistoryRow[] {
  * Every campaign, newest first -- including ones created but not yet sent
  * under, which is why this reads from `campaigns` rather than from `sends`.
  */
-export const listCampaigns = () =>
-  db.query<{ campaign: string; n: number; last: string | null }, []>(`
+export const listCampaigns = (): CampaignRow[] =>
+  db.query<CampaignRow, []>(`
     SELECT c.name AS campaign,
            (SELECT COUNT(*) FROM sends s
              WHERE s.campaign = c.name AND s.status IN ('queued','sent')) AS n,
+           (SELECT COUNT(*) FROM sends s
+             WHERE s.campaign = c.name AND s.status = 'sent') AS sent,
+           (SELECT COUNT(*) FROM sends s
+             WHERE s.campaign = c.name AND s.status = 'queued') AS queued,
            (SELECT MAX(COALESCE(s.sent_at, s.queued_at)) FROM sends s
-             WHERE s.campaign = c.name) AS last
+             WHERE s.campaign = c.name) AS last,
+           c.created_at,
+           c.default_template_id,
+           t.name AS default_template_name
     FROM campaigns c
+    LEFT JOIN templates t ON t.id = c.default_template_id
     ORDER BY c.created_at DESC, c.id DESC`).all();
+
+export { campaignDefaultTemplate, setCampaignDefaultTemplate };
+
+/** Renames nothing and deletes nothing if the campaign has any sends against
+ *  it -- the log has to stay readable. */
+export function deleteCampaign(name: string): void {
+  if (name === currentCampaign())
+    throw new Error("That is the current campaign. Switch to another one first.");
+  const used = db.query<{ n: number }, [string]>(
+    `SELECT COUNT(*) n FROM sends WHERE campaign = ?`).get(name)?.n ?? 0;
+  if (used) throw new Error(`"${name}" is on ${used} logged message(s) and is kept for the record.`);
+  const res = db.query(`DELETE FROM campaigns WHERE name = ?`).run(name);
+  if (!res.changes) throw new Error(`No campaign named "${name}".`);
+}
 
 // --- templates --------------------------------------------------------------
 

@@ -13,7 +13,7 @@
 import { config, assertSendable } from "../config.ts";
 import { db, isSuppressed, alreadyContacted, priorContact, currentCampaign,
          companySuppression } from "../db.ts";
-import { getCompany, emailsFor, getTemplate, addTag } from "../repo.ts";
+import { getCompany, emailsFor, addTag, resolveTemplateFor } from "../repo.ts";
 import { render, contextFor, footer } from "./render.ts";
 import { sendMessage } from "./gmail.ts";
 
@@ -85,7 +85,8 @@ export function blockersFor(companyId: number): string[] {
   else if (!primary.verified) out.push("Selected address is not verified (step 3).");
   const suppressed = companySuppression(companyId);
   if (suppressed) out.push(suppressed);
-  if (!company.template_id) out.push("No template selected (step 4).");
+  if (!resolveTemplateFor(company))
+    out.push("No template selected (step 4), and this campaign has no default.");
   if (alreadyContacted(companyId))
     out.push(`Already queued or sent in campaign "${currentCampaign()}" -- a second send is blocked.`);
   return out;
@@ -124,8 +125,9 @@ export function enqueue(companyId: number): void {
 
   const company = getCompany(companyId)!;
   const primary = emailsFor(companyId).find((e) => e.is_primary === 1)!;
-  const template = getTemplate(company.template_id!);
-  if (!template) throw new Error("Selected template no longer exists.");
+  // May be the company's own choice or the campaign default -- blockersFor has
+  // already established that one of them resolves.
+  const template = resolveTemplateFor(company)!.template;
 
   const ctx = contextFor(company);
   const subject = render(template.subject, ctx);
@@ -155,7 +157,7 @@ export function recordFormSend(companyId: number): void {
   if (alreadyContacted(companyId)) throw new Error("Already queued or sent.");
   const suppressed = companySuppression(companyId);   // an opt-out covers forms too
   if (suppressed) throw new Error(suppressed);
-  const template = company.template_id ? getTemplate(company.template_id) : null;
+  const template = resolveTemplateFor(company)?.template ?? null;
   const ctx = contextFor(company);
   const subject = template ? render(template.subject, ctx) : "(contact form)";
   db.query(
