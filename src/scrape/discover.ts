@@ -65,7 +65,22 @@ export async function discoverFor(companyId: number): Promise<number> {
   return list.length;
 }
 
-export interface DiscoverProgress { done: number; total: number; found: number }
+export interface DiscoverFailure { id: number; name: string; message: string }
+
+export interface DiscoverProgress {
+  done: number; total: number; found: number;
+  /** Companies whose crawl threw. The run continues past them. */
+  failures: DiscoverFailure[];
+  startedAt: number;
+}
+
+/** Wall-clock estimate of what is left, from the pace so far. Without it a run
+ *  that legitimately takes 40 minutes is indistinguishable from a hung one. */
+export function etaSeconds(p: DiscoverProgress): number | null {
+  if (!p.done || p.done >= p.total) return null;
+  const perCompany = (Date.now() - p.startedAt) / p.done;
+  return Math.round(((p.total - p.done) * perCompany) / 1000);
+}
 
 /** Run discovery for every company not yet successfully crawled.
  *  It used to re-crawl every company that had no address on EVERY run --
@@ -73,8 +88,8 @@ export interface DiscoverProgress { done: number; total: number; found: number }
 export async function discoverAll(
   onProgress?: (p: DiscoverProgress) => void,
 ): Promise<DiscoverProgress> {
-  const targets = db.query<{ id: number }, []>(`
-    SELECT c.id FROM companies c
+  const targets = db.query<{ id: number; name: string }, []>(`
+    SELECT c.id, c.name FROM companies c
     WHERE c.website IS NOT NULL
       AND c.review_status <> 'rejected'
       AND c.emails_checked_at IS NULL
@@ -82,10 +97,24 @@ export async function discoverAll(
     ORDER BY c.name COLLATE NOCASE
   `).all();
 
-  const p: DiscoverProgress = { done: 0, total: targets.length, found: 0 };
+  const p: DiscoverProgress = {
+    done: 0, total: targets.length, found: 0, failures: [], startedAt: Date.now(),
+  };
   onProgress?.(p);
   for (const t of targets) {
-    p.found += await discoverFor(t.id);
+    // One company must never end the run. tryFetch already swallows network
+    // faults, but a malformed page, a DB constraint, or an out-of-memory parse
+    // would otherwise kill the whole pass and -- before this -- do it silently,
+    // leaving a half-crawled directory and no indication of why it stopped.
+    try {
+      p.found += await discoverFor(t.id);
+    } catch (e) {
+      p.failures.push({
+        id: t.id, name: t.name,
+        message: e instanceof Error ? e.message : String(e),
+      });
+      console.error(`discover failed for ${t.name} (#${t.id}):`, e);
+    }
     p.done++;
     onProgress?.(p);
   }
@@ -93,7 +122,13 @@ export async function discoverAll(
 }
 
 if (import.meta.main) {
-  const p = await discoverAll((x) =>
-    process.stdout.write(`\r${x.done}/${x.total} (${x.found} addresses)   `));
-  console.log("\n", p);
+  const p = await discoverAll((x) => {
+    const eta = etaSeconds(x);
+    process.stdout.write(
+      `\r${x.done}/${x.total} (${x.found} addresses` +
+      `${x.failures.length ? `, ${x.failures.length} failed` : ""})` +
+      `${eta !== null ? ` ~${Math.ceil(eta / 60)}m left` : ""}      `);
+  });
+  console.log(`\n${p.done} crawled, ${p.found} addresses, ${p.failures.length} failed.`);
+  for (const f of p.failures) console.log(`  #${f.id} ${f.name}: ${f.message}`);
 }

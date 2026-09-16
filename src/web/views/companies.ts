@@ -30,9 +30,13 @@ const errBanner = (err: string | null) =>
 export function queuePage(
   rows: CompanyRow[], filter: string, running: string | null,
   send: SendPanel, err: string | null,
+  lastJob: { label: string; ok: boolean; detail: string } | null = null,
 ): string {
   return `
 ${errBanner(err)}
+${lastJob ? `<div class="banner" style="border-left-color:var(${lastJob.ok ? "--ok" : "--bad"})">
+  <b>${esc(lastJob.label)} ${lastJob.ok ? "finished" : "stopped"}:</b> ${esc(lastJob.detail)}
+</div>` : ""}
 <div class="card">
   <div class="row">
     <form method="post" action="/scrape/chamber" class="inline">
@@ -44,6 +48,11 @@ ${errBanner(err)}
     ${running ? `<span class="warn">${esc(running)} — updating live</span>`
               : `<span class="mut">Scrapes run in the background; this page updates while they do.</span>`}
   </div>
+  ${running ? `<p class="mut" style="margin:.6rem 0 0">Crawling is deliberately slow —
+    there is a pause between every request so the sites being read don't rate-limit us,
+    which is why a few hundred companies takes tens of minutes.
+    <b>Restarting the server cancels the run</b>; it resumes where it left off next time.
+    For a long run, <code>bun run scrape:emails</code> in its own terminal survives a restart.</p>` : ""}
 </div>
 
 <div class="card">

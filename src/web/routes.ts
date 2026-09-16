@@ -11,7 +11,7 @@ import * as repo from "../repo.ts";
 import { db, currentCampaign, switchCampaign, companySuppression } from "../db.ts";
 import { config } from "../config.ts";
 import { syncAll } from "../scrape/chamber.ts";
-import { discoverAll } from "../scrape/discover.ts";
+import { discoverAll, etaSeconds, type DiscoverProgress } from "../scrape/discover.ts";
 import { render, contextFor, footer } from "../mail/render.ts";
 import { enqueue, drain, recordFormSend, blockersFor, peekBudget,
          priorContactWarning } from "../mail/queue.ts";
@@ -39,11 +39,39 @@ routes.onError((err, c) => {
 /** One background job at a time. Keeps the Chamber from being hammered by
  *  two concurrent scrapes if the button is double-clicked. */
 let running: string | null = null;
+
+/**
+ * How the last background job ended. A job used to report failure ONLY to the
+ * server console: the page simply stopped updating, which is indistinguishable
+ * from a job still working, and left no way to tell a crash from a finish.
+ */
+let lastJob: { label: string; ok: boolean; detail: string } | null = null;
+
 function start(label: string, job: () => Promise<unknown>) {
   if (running) return;
   running = label;
-  job().catch((e) => console.error(`${label} failed:`, e))
-       .finally(() => { running = null; });
+  lastJob = null;
+  job()
+    .then((result) => { lastJob = { label, ok: true, detail: summarize(result) }; })
+    .catch((e) => {
+      lastJob = { label, ok: false, detail: e instanceof Error ? e.message : String(e) };
+      console.error(`${label} failed:`, e);
+    })
+    .finally(() => { running = null; });
+}
+
+/** One line describing whatever a finished job returned. */
+function summarize(result: unknown): string {
+  const r = result as Partial<DiscoverProgress> | undefined;
+  if (r && typeof r.done === "number" && typeof r.total === "number") {
+    const failed = r.failures?.length ?? 0;
+    return `${r.done} of ${r.total} crawled, ${r.found ?? 0} addresses found` +
+           (failed ? `, ${failed} site${failed === 1 ? "" : "s"} failed: ` +
+                     r.failures!.slice(0, 5).map((f) => f.name).join(", ") +
+                     (failed > 5 ? ` and ${failed - 5} more` : "")
+                   : ".");
+  }
+  return "Finished.";
 }
 
 const int = (v: unknown) => Number.parseInt(String(v ?? ""), 10);
@@ -67,7 +95,12 @@ routes.post("/scrape/chamber", (c) => {
 
 routes.post("/scrape/emails", (c) => {
   start("Discovering email addresses", () =>
-    discoverAll((p) => { running = `Finding emails: ${p.done}/${p.total} (${p.found} found)`; }));
+    discoverAll((p) => {
+      const eta = etaSeconds(p);
+      running = `Finding emails: ${p.done}/${p.total} (${p.found} found` +
+        `${p.failures.length ? `, ${p.failures.length} failed` : ""})` +
+        `${eta !== null ? ` — about ${Math.ceil(eta / 60)} min left` : ""}`;
+    }));
   return c.redirect("/");
 });
 
@@ -86,7 +119,7 @@ routes.get("/", (c) => {
       used: budget.used,
       queued: stats.queued,
       campaign: currentCampaign(),
-    }, err),
+    }, err, lastJob),
     stats, { refresh: running !== null && !err }));
 });
 
