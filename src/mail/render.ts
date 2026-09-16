@@ -25,13 +25,30 @@ export const senderNameFor = (
 ): string =>
   c.sender_name?.trim() || studentName?.trim() || config.canSpam.senderName;
 
+/**
+ * How the sender is presented to a recipient: "<who>, <org>".
+ *
+ * Kept separate from senderNameFor() because the two answer different
+ * questions -- senderNameFor decides WHICH PERSON signs (override, then
+ * student, then .env), and this decides how that person is displayed. The org
+ * is the same for everyone, so folding it into the person's name would mean
+ * storing it on every company row and every send.
+ */
+export const displayNameFor = (
+  c: Pick<Company, "sender_name">, studentName?: string,
+): string => {
+  const who = senderNameFor(c, studentName);
+  const org = config.canSpam.senderOrg.trim();
+  return org ? `${who}, ${org}` : who;
+};
+
 export function contextFor(c: Company, studentName?: string): MergeContext {
   return {
     company: c.name.replace(/\s*\([^)]*\)\s*$/, "").trim(), // drop '(APT)' suffix
     city: c.city ?? "Huntsville",
     state: c.state ?? "AL",
     website: c.website ?? "",
-    sender_name: senderNameFor(c, studentName),
+    sender_name: displayNameFor(c, studentName),
   };
 }
 
@@ -48,5 +65,6 @@ export function contextFor(c: Company, studentName?: string): MergeContext {
  */
 export function footer(senderName?: string): string {
   const who = senderName?.trim() || config.canSpam.senderName;
-  return `\n\n---\n${who}\n${config.canSpam.postalAddress}`;
+  const org = config.canSpam.senderOrg.trim();
+  return `\n\n---\n${org ? `${who}, ${org}` : who}\n${config.canSpam.postalAddress}`;
 }

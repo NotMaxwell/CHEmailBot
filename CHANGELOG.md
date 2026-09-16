@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.3.1] — 2026-09-16
+
+### Added
+- `SENDER_ORG`. Whoever signs a message is now presented as `<name>, <org>` —
+  on the From display name, the footer signature, and `{{sender_name}}` — so a
+  sponsor sees the team, not just a student they have never heard of. Blank
+  keeps the previous behaviour of the name alone.
+
+### Changed
+- The send button reads **Send** rather than "Drain queue", and the background
+  job reports itself as "Sending". `bun run send:drain` keeps its name.
+
+### Fixed
+- Tests pinned `SENDER_ORG` in `tests/setup.ts`. `config.ts` loads the project
+  `.env` for any key not already set, so a real value would otherwise leak into
+  the suite and make assertions depend on the developer's machine.
+
 ## [1.3.0] — 2026-09-15
 
 ### Added

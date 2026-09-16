@@ -2,6 +2,7 @@
 import { expect, test } from "bun:test";
 
 process.env.DB_PATH = ":memory:";
+process.env.SENDER_ORG = "";
 process.env.SENDER_POSTAL_ADDRESS = "1 Test St, Huntsville AL";
 process.env.DRY_RUN = "1";
 

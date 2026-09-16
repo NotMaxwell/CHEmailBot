@@ -66,7 +66,7 @@ ${lastJob ? `<div class="banner" style="border-left-color:var(${lastJob.ok ? "--
       : '<span class="pill bad">LIVE — messages will actually send</span>'}
     <span class="mut">today ${send.used}/${send.cap} · ${send.queued} queued</span>
     <form method="post" action="/send/drain" class="inline">
-      <button class="primary" ${running || !send.queued ? "disabled" : ""}>Drain queue</button>
+      <button class="primary" ${running || !send.queued ? "disabled" : ""}>Send</button>
     </form>
   </div>
 </div>

@@ -58,6 +58,8 @@ export const config = {
   // line -- see footer() and the do-not-contact list.
   canSpam: {
     senderName: env("SENDER_NAME"),
+    /** Appended to whoever signs, as "<name>, <org>". Blank = name alone. */
+    senderOrg: env("SENDER_ORG"),
     postalAddress: env("SENDER_POSTAL_ADDRESS"),
   },
 

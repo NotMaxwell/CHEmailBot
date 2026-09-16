@@ -117,7 +117,9 @@ export function buildRaw(
 ): string {
   // The address is always the authorized mailbox; only the display name varies,
   // so the From line matches whoever signed the body.
-  const who = fromName?.trim() || config.canSpam.senderName;
+  const person = fromName?.trim() || config.canSpam.senderName;
+  const org = config.canSpam.senderOrg.trim();
+  const who = person && org ? `${person}, ${org}` : person || org;
   const from = who ? `${encodeHeader(who)} <${config.gmail.sender}>` : config.gmail.sender;
 
   const headers = [

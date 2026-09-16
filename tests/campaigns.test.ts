@@ -4,6 +4,7 @@ import { expect, test } from "bun:test";
 
 process.env.DB_PATH = ":memory:";
 process.env.SENDER_NAME = "Test Sender";
+process.env.SENDER_ORG = "";
 process.env.SENDER_POSTAL_ADDRESS = "1 Test St, Huntsville AL";
 process.env.UNSUBSCRIBE_MAILTO = "unsub@test.example";
 process.env.DRY_RUN = "1";
@@ -11,8 +12,9 @@ process.env.DRY_RUN = "1";
 const { db, setSetting, setCampaignDefaultTemplate, campaignDefaultTemplate } =
   await import("../src/db.ts");
 const repo = await import("../src/repo.ts");
+const { config } = await import("../src/config.ts");
 const { blockersFor, enqueue } = await import("../src/mail/queue.ts");
-const { footer, senderNameFor, contextFor } = await import("../src/mail/render.ts");
+const { footer, senderNameFor, displayNameFor, contextFor } = await import("../src/mail/render.ts");
 const { buildRaw } = await import("../src/mail/gmail.ts");
 const { routes } = await import("../src/web/routes.ts");
 const { sessionCookie } = await import("./helper.ts");
@@ -166,4 +168,36 @@ test("the old templates URL redirects to the merged tab", async () => {
 
 test("a campaign with sends against it cannot be deleted", () => {
   expect(() => repo.deleteCampaign(CAMPAIGN)).toThrow();
+});
+
+// --- organisation suffix ----------------------------------------------------
+
+test("the org is appended to whoever signs, on the From line and the footer", () => {
+  const before = config.canSpam.senderOrg;
+  try {
+    (config.canSpam as { senderOrg: string }).senderOrg = "Critical Hit Robotics";
+    const c = { sender_name: null } as { sender_name: string | null };
+
+    // senderNameFor still answers "which person"; displayNameFor adds the org.
+    expect(senderNameFor(c, "Alice R")).toBe("Alice R");
+    expect(displayNameFor(c, "Alice R")).toBe("Alice R, Critical Hit Robotics");
+
+    expect(footer("Alice R")).toContain("Alice R, Critical Hit Robotics");
+    expect(buildRaw("to@x.example", "s", "b", "Alice R"))
+      .toContain("From: Alice R, Critical Hit Robotics <");
+  } finally {
+    (config.canSpam as { senderOrg: string }).senderOrg = before;
+  }
+});
+
+test("with no org configured the name stands alone", () => {
+  const before = config.canSpam.senderOrg;
+  try {
+    (config.canSpam as { senderOrg: string }).senderOrg = "";
+    const c = { sender_name: null } as { sender_name: string | null };
+    expect(displayNameFor(c, "Alice R")).toBe("Alice R");
+    expect(footer("Alice R")).toContain("\n---\nAlice R\n");   // no ", org" suffix
+  } finally {
+    (config.canSpam as { senderOrg: string }).senderOrg = before;
+  }
 });

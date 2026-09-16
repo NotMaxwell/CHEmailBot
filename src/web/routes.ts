@@ -370,7 +370,7 @@ routes.post("/company/:id/suppress", async (c) => {
 
 routes.post("/send/drain", async (c) => {
   return c.redirect(await act("/", () =>
-    start("Draining send queue", () =>
+    start("Sending", () =>
       drain((r) => {
         running = `Sending: ${r.sent}/${r.cap} today` +
                   (r.failed ? `, ${r.failed} failed` : "") +
