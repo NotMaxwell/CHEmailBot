@@ -157,8 +157,8 @@ routes.get("/company/:id", (c) => {
 
   // One source of truth for the gates: the same function the queue enforces.
   const blockers = blockersFor(id);
-  if (!config.canSpam.senderName || !config.canSpam.postalAddress || !config.canSpam.unsubscribeMailto)
-    blockers.push("CAN-SPAM fields are missing from .env (sender name, postal address, unsubscribe).");
+  if (!config.canSpam.senderName || !config.canSpam.postalAddress)
+    blockers.push("Sender identity is missing from .env (sender name, postal address).");
 
   return c.html(layout(company.name,
     companyPage(company, emails, repo.listTemplates(), preview, sent ?? null, blockers,

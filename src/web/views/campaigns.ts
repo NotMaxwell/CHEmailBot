@@ -6,7 +6,7 @@
 import { esc } from "./layout.ts";
 import type { CampaignRow, TemplateRow } from "../../repo.ts";
 
-const FIELDS = "{{company}} {{city}} {{state}} {{website}} {{sender_name}} {{unsubscribe}}";
+const FIELDS = "{{company}} {{city}} {{state}} {{website}} {{sender_name}}";
 
 const templateOptions = (list: TemplateRow[], selected: number | null) =>
   list.map((t) => `<option value="${t.id}" ${t.id === selected ? "selected" : ""}>${esc(t.name)}</option>`).join("");

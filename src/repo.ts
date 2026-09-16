@@ -452,7 +452,7 @@ export function deleteCampaign(name: string): void {
 
 const SAMPLE_CONTEXT: MergeContext = {
   company: "Acme", city: "Huntsville", state: "AL", website: "https://acme.example",
-  sender_name: "Sender", unsubscribe: "unsubscribe@example.com",
+  sender_name: "Sender",
 };
 
 /** Throws on an unknown merge field, so a typo like {{compnay}} is caught at

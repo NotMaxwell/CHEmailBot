@@ -127,9 +127,6 @@ export function buildRaw(
     "MIME-Version: 1.0",
     'Content-Type: text/plain; charset="UTF-8"',
     "Content-Transfer-Encoding: base64",
-    // Deliverability: gives Gmail/Outlook a native unsubscribe affordance.
-    ...(config.canSpam.unsubscribeMailto
-      ? [`List-Unsubscribe: <mailto:${config.canSpam.unsubscribeMailto}>`] : []),
   ];
   // base64 bodies must be wrapped at 76 chars per RFC 2045.
   const encoded = b64(body).replace(/(.{76})/g, "$1\r\n").trimEnd();

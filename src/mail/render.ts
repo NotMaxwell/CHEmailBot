@@ -25,19 +25,21 @@ export function contextFor(c: Company): MergeContext {
     state: c.state ?? "AL",
     website: c.website ?? "",
     sender_name: senderNameFor(c),
-    unsubscribe: config.canSpam.unsubscribeMailto,
   };
 }
 
 /**
- * CAN-SPAM footer. Appended to every outbound body, non-negotiably.
+ * Identity footer, appended to every outbound body.
  *
- * `senderName` overrides the signature line only. The postal address and the
- * unsubscribe route stay whatever .env says, because those identify the sending
- * organization and are the part the law is actually about.
+ * Sender name and a real postal address only. This outreach is a sponsorship
+ * solicitation rather than commercial advertising, so it carries no opt-out
+ * line; opt-outs are handled by the do-not-contact list, which blocks a company
+ * at send time whether the request arrived by reply, phone, or in person.
+ *
+ * `senderName` overrides the signature line only -- the postal address
+ * identifies the sending organization and never varies per recipient.
  */
 export function footer(senderName?: string): string {
   const who = senderName?.trim() || config.canSpam.senderName;
-  return `\n\n---\n${who}\n${config.canSpam.postalAddress}\n` +
-         `To stop receiving these, reply "unsubscribe" or email ${config.canSpam.unsubscribeMailto}.`;
+  return `\n\n---\n${who}\n${config.canSpam.postalAddress}`;
 }

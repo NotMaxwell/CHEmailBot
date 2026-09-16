@@ -52,10 +52,13 @@ export const config = {
     dryRun: env("DRY_RUN", "1") !== "0",
   },
 
+  // Sender identity, appended to every outbound body as the footer. Named for
+  // the regime it was built against; this outreach is a sponsorship
+  // solicitation rather than commercial advertising, so it carries no opt-out
+  // line -- see footer() and the do-not-contact list.
   canSpam: {
     senderName: env("SENDER_NAME"),
     postalAddress: env("SENDER_POSTAL_ADDRESS"),
-    unsubscribeMailto: env("UNSUBSCRIBE_MAILTO"),
   },
 
   scrape: {
@@ -74,13 +77,17 @@ export const config = {
   },
 } as const;
 
-/** Throws unless every legally-required CAN-SPAM field is populated. */
+/**
+ * Throws unless the message can identify its sender. Both fields land in the
+ * footer of every outbound message, so a blank one would mail a stranger an
+ * anonymous solicitation.
+ */
 export function assertSendable(): void {
-  const missing = (["senderName", "postalAddress", "unsubscribeMailto"] as const)
+  const missing = (["senderName", "postalAddress"] as const)
     .filter((k) => !config.canSpam[k]);
   if (missing.length) {
     throw new Error(
-      `Refusing to send: missing CAN-SPAM fields in .env -> ${missing.join(", ")}`,
+      `Refusing to send: missing sender identity in .env -> ${missing.join(", ")}`,
     );
   }
 }

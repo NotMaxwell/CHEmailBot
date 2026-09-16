@@ -183,7 +183,7 @@ ${contacted ? `<div class="banner"><b>Already ${esc(contacted.status)}</b>
   </form>
   <p class="mut" style="margin:.6rem 0 0">Signs the message and sets the name on the
     From line. The address itself is always the connected mailbox, and the postal
-    address and unsubscribe route stay as configured. Leave it blank to use the default.</p>
+    address stays as configured. Leave it blank to use the default.</p>
 </div>
 
 <div class="card">

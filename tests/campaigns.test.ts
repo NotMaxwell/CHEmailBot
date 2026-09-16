@@ -115,10 +115,14 @@ test("an override changes the signature, the merge field, and the From name", ()
   expect(buildRaw("to@x.example", "s", "b", "Max M")).toContain("From: Max M <");
 });
 
-test("the override never rewrites the postal address or unsubscribe route", () => {
+test("the override never rewrites the postal address", () => {
   const f = footer("Max M");
   expect(f).toContain("1 Test St, Huntsville AL");
-  expect(f).toContain("unsub@test.example");
+});
+
+test("the footer carries no opt-out line and the headers no List-Unsubscribe", () => {
+  expect(footer("Max M")).not.toContain("unsubscribe");
+  expect(buildRaw("to@x.example", "s", "b")).not.toContain("List-Unsubscribe");
 });
 
 test("a whitespace-only override falls back rather than sending unsigned", () => {

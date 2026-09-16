@@ -54,5 +54,4 @@ export interface MergeContext {
   state: string;
   website: string;
   sender_name: string;
-  unsubscribe: string;
 }
