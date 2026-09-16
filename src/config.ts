@@ -52,10 +52,9 @@ export const config = {
     dryRun: env("DRY_RUN", "1") !== "0",
   },
 
-  // Sender identity, appended to every outbound body as the footer. Named for
-  // the regime it was built against; this outreach is a sponsorship
-  // solicitation rather than commercial advertising, so it carries no opt-out
-  // line -- see footer() and the do-not-contact list.
+  // Sender identity, appended to every outbound body as the footer: who the
+  // organisation is, where it is, and how to opt out. Every field here is a
+  // CAN-SPAM requirement, not a style choice -- see footer() in mail/render.ts.
   canSpam: {
     senderName: env("SENDER_NAME"),
     /** Appended to whoever signs, as "<name>, <org>". Blank = name alone. */
@@ -80,16 +79,17 @@ export const config = {
 } as const;
 
 /**
- * Throws unless the message can name who sent it. SENDER_NAME is always used
- * -- it is the From display name and the signature -- so it is required
- * unconditionally.
- *
- * SENDER_POSTAL_ADDRESS is checked separately, at the point a message that
- * actually carries the footer is built (see enqueue), because a template with
- * the footer switched off never uses it.
+ * Throws unless the message can meet CAN-SPAM's baseline: who sent it and
+ * where they can be reached by post. Every outbound message carries the
+ * footer (see mail/render.ts#footer) with no per-template opt-out, so both
+ * fields are required unconditionally rather than only when a template
+ * happens to use them.
  */
 export function assertSendable(): void {
   if (!config.canSpam.senderName) {
     throw new Error("Refusing to send: missing sender identity in .env -> senderName");
+  }
+  if (!config.canSpam.postalAddress) {
+    throw new Error("Refusing to send: missing SENDER_POSTAL_ADDRESS in .env -- CAN-SPAM requires a real postal address in every message.");
   }
 }

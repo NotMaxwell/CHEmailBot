@@ -12,7 +12,7 @@ const templateOptions = (list: TemplateRow[], selected: number | null) =>
   list.map((t) => `<option value="${t.id}" ${t.id === selected ? "selected" : ""}>${esc(t.name)}</option>`).join("");
 
 export interface CampaignsView {
-  /** The footer exactly as it will appear, so the toggle is not abstract. */
+  /** The footer exactly as it will appear on every send. */
   footerPreview: string;
   campaigns: CampaignRow[];
   templates: TemplateRow[];
@@ -133,11 +133,12 @@ ${v.campaigns.map((c) => `<tr>
   <b>The footer</b>
   <pre style="margin:.4rem 0 0;white-space:pre-wrap;font:13px/1.5 ui-monospace,monospace;color:var(--mut)">---
 ${esc(footerPreview)}</pre>
-  <p class="mut" style="margin:.5rem 0 0">Appended below the body of any template with
-    <b>Append the footer</b> ticked — the team and where to find it, which a cold
-    recipient cannot get from the message itself. Untick it and that template sends
-    the body alone. Whoever wrote the message already signs it in the body, so the
-    footer names the <em>organisation</em>, not the person.</p>
+  <p class="mut" style="margin:.5rem 0 0">Appended below the body of <b>every</b> template,
+    with no way to switch it off — the postal address and opt-out instructions are
+    CAN-SPAM requirements, not a style choice. Whoever wrote the message already signs
+    it in the body, so the footer names the <em>organisation</em>, not the person. A
+    reply asking to stop is honored from <a href="/suppressions">Do-not-contact</a> or
+    the "Do not contact" button on the company page.</p>
 </div>
 
 ${v.templates.map((t) => `<div class="card">
@@ -148,8 +149,6 @@ ${v.templates.map((t) => `<div class="card">
     </div>
     <textarea name="body" required aria-label="Body">${esc(t.body)}</textarea>
     <div class="row">
-      <label class="check"><input type="checkbox" name="include_footer" value="1"
-        ${t.include_footer ? "checked" : ""}> Append the footer</label>
       <button class="primary">Save</button>
       ${t.id === cur?.default_template_id
         ? `<span class="pill ok">default for ${esc(v.current)}</span>`
@@ -178,8 +177,6 @@ ${v.templates.map((t) => `<div class="card">
     </div>
     <textarea name="body" placeholder="Hi {{company}} team," required></textarea>
     <div class="row">
-      <label class="check"><input type="checkbox" name="include_footer" value="1" checked>
-        Append the footer</label>
       <button class="primary">Create template</button>
     </div>
   </form>

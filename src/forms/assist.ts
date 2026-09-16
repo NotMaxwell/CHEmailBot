@@ -124,7 +124,7 @@ export async function assist(companyId: number): Promise<void> {
   if (!template) throw new Error("Selected template no longer exists");
 
   const ctx = contextFor(company);
-  const message = render(template.body, ctx) + (template.include_footer ? footer() : "");
+  const message = render(template.body, ctx) + footer();
 
   const browser = await chromium.launch({ headless: false });   // headed, always
   const page = await browser.newPage();

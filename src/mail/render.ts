@@ -53,20 +53,31 @@ export function contextFor(c: Company, studentName?: string): MergeContext {
 }
 
 /**
- * Identity footer: the ORGANISATION and its postal address.
+ * CAN-SPAM footer: the ORGANISATION, its postal address, and how to opt out.
+ * Appended to every outbound message -- unconditionally, not per-template --
+ * because a real postal address and a working opt-out mechanism are legal
+ * minimums for commercial email, not a style choice a template can switch off.
  *
- * Deliberately not the individual -- whoever wrote the message has already
- * signed it in the body, and repeating them here said nothing new. What a
- * recipient cannot get from the body is who the team is and where they are,
- * which is also what makes a cold approach answerable rather than anonymous.
+ * The organisation rather than the individual signs it: whoever wrote the
+ * message has already signed it in the body, and repeating them here said
+ * nothing new. What a recipient cannot get from the body is who the team is,
+ * where they are, and how to stop hearing from them.
  *
- * Per-template: a template with include_footer off appends nothing. Opt-outs
- * are handled by the do-not-contact list either way -- this outreach is a
- * sponsorship solicitation, not commercial advertising, so it carries no
- * opt-out line in either case.
+ * Opt-out mechanism: replying (any reply, or the word UNSUBSCRIBE) reaches the
+ * real mailbox in GMAIL_SENDER, since messages are sent from -- and threaded
+ * to -- that inbox. A person there records it on the do-not-contact list
+ * (`/suppressions`, or the "Do not contact" button on the company page), which
+ * blocks every future email, form contact, and ready-list entry for that
+ * company. There is no automated inbox scanning -- the Gmail integration is
+ * deliberately send-only (see mail/gmail.ts) -- so honoring a request is a
+ * manual step a person must do promptly (CAN-SPAM allows up to 10 business
+ * days; the suppressions page says so at the point of use).
  */
 export function footer(): string {
   const org = config.canSpam.senderOrg.trim() || config.canSpam.senderName;
   const address = config.canSpam.postalAddress;
-  return `\n\n---\n${org}${address ? `\n${address}` : ""}`;
+  return `\n\n---\n${org}${address ? `\n${address}` : ""}\n\n`
+    + `If you'd rather not receive future emails from us, just reply to this `
+    + `message (e.g. with "UNSUBSCRIBE") and we will honor that within 10 `
+    + `business days.`;
 }

@@ -129,6 +129,11 @@ export function buildRaw(
     "MIME-Version: 1.0",
     'Content-Type: text/plain; charset="UTF-8"',
     "Content-Transfer-Encoding: base64",
+    // No public endpoint to point a one-click URL at (see mail/gmail.ts top
+    // comment: send-only, no server exposed beyond localhost), so this is a
+    // mailto -- a reply lands in the real inbox for a person to action, same
+    // as the footer's own instructions.
+    `List-Unsubscribe: <mailto:${config.gmail.sender}?subject=unsubscribe>`,
   ];
   // base64 bodies must be wrapped at 76 chars per RFC 2045.
   const encoded = b64(body).replace(/(.{76})/g, "$1\r\n").trimEnd();

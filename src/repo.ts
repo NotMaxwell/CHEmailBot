@@ -81,8 +81,6 @@ export const emailsFor = (id: number) =>
 
 export interface Template {
   id: number; name: string; subject: string; body: string;
-  /** 1 = append the organisation footer to this template's messages. */
-  include_footer: 0 | 1;
 }
 
 export const listTemplates = () =>
@@ -466,27 +464,23 @@ function validateTemplate(name: string, subject: string, body: string) {
   render(body, SAMPLE_CONTEXT);
 }
 
-export function createTemplate(
-  name: string, subject: string, body: string, includeFooter = true,
-): number {
+export function createTemplate(name: string, subject: string, body: string): number {
   validateTemplate(name, subject, body);
   try {
     return Number(db.query(
-      `INSERT INTO templates (name, subject, body, include_footer) VALUES (?, ?, ?, ?)`)
-      .run(name.trim(), subject, body, includeFooter ? 1 : 0).lastInsertRowid);
+      `INSERT INTO templates (name, subject, body) VALUES (?, ?, ?)`)
+      .run(name.trim(), subject, body).lastInsertRowid);
   } catch (e) {
     if (String(e).includes("UNIQUE")) throw new Error(`A template named "${name.trim()}" already exists.`);
     throw e;
   }
 }
 
-export function updateTemplate(
-  id: number, name: string, subject: string, body: string, includeFooter = true,
-) {
+export function updateTemplate(id: number, name: string, subject: string, body: string) {
   validateTemplate(name, subject, body);
   try {
-    db.query(`UPDATE templates SET name = ?, subject = ?, body = ?, include_footer = ? WHERE id = ?`)
-      .run(name.trim(), subject, body, includeFooter ? 1 : 0, id);
+    db.query(`UPDATE templates SET name = ?, subject = ?, body = ? WHERE id = ?`)
+      .run(name.trim(), subject, body, id);
   } catch (e) {
     if (String(e).includes("UNIQUE")) throw new Error(`A template named "${name.trim()}" already exists.`);
     throw e;

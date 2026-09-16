@@ -58,8 +58,11 @@ member.
 - **No re-send after a crash.** A row is claimed before Gmail is called; if the
   process dies mid-send, the row is failed with instructions to check your Sent
   folder — never retried automatically.
-- **Opt-outs are honored everywhere.** The Do-not-contact list blocks email
-  sends, recorded form contacts, and the ready lists.
+- **Opt-outs are honored everywhere.** Every message's footer tells the
+  recipient to reply to stop hearing from us; the reply lands in the real
+  Gmail inbox for a person to action with the "Do not contact" button (or
+  `/suppressions`), which then blocks email sends, recorded form contacts, and
+  the ready lists.
 - **Nothing sends by accident.** `DRY_RUN` is on by default, and sending refuses
   to start without the CAN-SPAM fields.
 
@@ -142,8 +145,9 @@ bun run docker:down
    land in spam permanently. Use a dedicated domain with SPF, DKIM, and DMARC,
    and keep the warm-up ramp.
 3. **Identity:** `SENDER_NAME`, `SENDER_ORG`, and a real `SENDER_POSTAL_ADDRESS`.
-   The footer prints the organisation and its address, and is per-template —
-   untick **Append the footer** and that template sends the body alone.
+   The footer — organisation, postal address, and opt-out instructions — is
+   appended to every message with no per-template way to turn it off; sending
+   refuses to start while `SENDER_POSTAL_ADDRESS` is blank.
 4. Preview with `bun run test:self`, then set `DRY_RUN=0` and
    `bun run test:self --send` to put **one** real message in your own inbox.
    Read what arrived, headers included.

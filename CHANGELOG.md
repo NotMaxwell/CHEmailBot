@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.5.0] — 2026-09-16
+
+### Changed
+- **The footer is a CAN-SPAM opt-out mechanism again, and is no longer
+  optional.** It now tells the recipient to reply (e.g. "UNSUBSCRIBE") to stop
+  receiving future messages, and every outbound message carries a
+  `List-Unsubscribe: <mailto:...>` header pointing at the real sending inbox.
+  The **Append the footer** per-template checkbox is gone -- the organisation
+  name, postal address, and opt-out line are legal minimums for a commercial
+  message, not something a template should be able to omit.
+- `SENDER_POSTAL_ADDRESS` is required unconditionally, the same as
+  `SENDER_NAME` -- `assertSendable()` now checks both up front rather than
+  only at the point a footer-carrying message is built.
+- There is still no automated inbox scanning: the Gmail scope stays
+  send-only. A reply is actioned by a person, with the existing "Do not
+  contact" button on the company page or the `/suppressions` page -- both of
+  which already existed and now double as the other half of the opt-out loop.
+
 ## [1.4.0] — 2026-09-16
 
 ### Changed

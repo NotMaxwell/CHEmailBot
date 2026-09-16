@@ -278,8 +278,8 @@ GMAIL_SENDER=you@yourdomain.com
 TEST_EMAIL=you@gmail.com        # different provider -- see B5
 
 SENDER_NAME=Your Name
+SENDER_ORG=Your Org
 SENDER_POSTAL_ADDRESS=123 Real Street, Huntsville, AL 35801
-UNSUBSCRIBE_MAILTO=unsubscribe@yourdomain.com
 
 DRY_RUN=1
 ```
@@ -288,20 +288,26 @@ DRY_RUN=1
   the token's owner; a mismatched `From` is silently rewritten, so a typo here
   shows up as mail from the wrong address rather than as an error.
 - `GMAIL_REDIRECT_URI` must byte-match A6.
-- The three CAN-SPAM fields are enforced, not advisory — `assertSendable()` in
-  `src/config.ts` refuses to send while any is blank, and `footer()` in
-  `src/mail/render.ts` appends all three to every body.
-- `UNSUBSCRIBE_MAILTO` must actually receive mail — an alias on your domain is
-  enough, but it has to work for at least 30 days after a send. On an org
-  domain you may need an admin to create it.
+- `SENDER_NAME` and `SENDER_POSTAL_ADDRESS` are enforced, not advisory —
+  `assertSendable()` in `src/config.ts` refuses to send while either is blank,
+  and `footer()` in `src/mail/render.ts` appends both, plus opt-out
+  instructions, to every body. There is no per-template way to turn this off.
+- The opt-out mechanism is a reply, not a separate mailbox: recipients are told
+  to reply to stop hearing from you, and the reply lands in `GMAIL_SENDER`
+  itself (mail always sends from, and threads to, that inbox). Whoever reads it
+  records the opt-out with the **Do not contact** button on the company page,
+  or at `/suppressions` — there is no automated inbox scanning (the OAuth scope
+  is send-only, see B1), so this is a manual step someone must do promptly.
 - `.env` is gitignored. Keep it that way; the client secret is in it.
 
 ### B3. Write the template
 
-`templates/outreach.md` ships as a placeholder with a TODO. Replace the body
-before sending anything. Merge fields are `{{company}} {{city}} {{state}}
-{{website}} {{sender_name}} {{unsubscribe}}`; an unknown field throws at render
-time rather than mailing a literal `{{company}}` to a stranger.
+Templates live in the database, edited from **Campaigns & templates** in the
+web UI once the server is running (B4) — there is no template file to hand-edit.
+Merge fields are `{{company}} {{city}} {{state}} {{website}} {{sender_name}}`;
+an unknown field throws at render time rather than mailing a literal
+`{{company}}` to a stranger. The CAN-SPAM footer (organisation, address,
+opt-out) is appended automatically and is not itself a merge field.
 
 ### B4. Authorize
 
@@ -429,7 +435,7 @@ so provider port blocks don't apply.
 | `Gmail API has not been used in project …` | A2 skipped | Enable the Gmail API |
 | `Google returned no refresh_token` | Prior grant still active | Revoke at myaccount.google.com → Data & privacy → Third-party apps, then reconnect |
 | `invalid_grant: Token has been expired or revoked` after ~a week | Path A, app in Testing | Reconnect Gmail, or move to Path B |
-| `Refusing to send: missing CAN-SPAM fields` | Blank field in `.env` | Fill `SENDER_NAME`, `SENDER_POSTAL_ADDRESS`, `UNSUBSCRIBE_MAILTO` |
+| `Refusing to send: missing sender identity` / `missing SENDER_POSTAL_ADDRESS` | Blank field in `.env` | Fill `SENDER_NAME` and `SENDER_POSTAL_ADDRESS` |
 | Mail arrives from the wrong address | `GMAIL_SENDER` ≠ authorized account | Correct it and reconnect |
 
 ## Token lifetime

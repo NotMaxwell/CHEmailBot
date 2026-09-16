@@ -77,7 +77,7 @@ function main(): Promise<void> | void {
 
   const ctx = contextFor(SAMPLE);
   const subject = render(template.subject, ctx);
-  const body = render(template.body, ctx) + (template.include_footer ? footer() : "");
+  const body = render(template.body, ctx) + footer();
   const raw = buildRaw(to, subject, body);
 
   console.log(`Template : ${template.name} (id ${template.id})`);

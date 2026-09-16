@@ -129,33 +129,21 @@ test("the footer names the organisation and its address, not the person", () => 
   }
 });
 
-test("the footer carries no opt-out line and the headers no List-Unsubscribe", () => {
-  expect(footer()).not.toContain("unsubscribe");
-  expect(buildRaw("to@x.example", "s", "b")).not.toContain("List-Unsubscribe");
+test("the footer carries an opt-out line and the headers a List-Unsubscribe", () => {
+  expect(footer().toLowerCase()).toContain("unsubscribe");
+  expect(buildRaw("to@x.example", "s", "b")).toContain("List-Unsubscribe: <mailto:");
 });
 
-test("a template with the footer off sends the body alone", () => {
-  const id = repo.createTemplate("No footer", "S {{company}}", "Body only.", false);
-  expect(repo.getTemplate(id)!.include_footer).toBe(0);
+test("a template cannot opt out of the footer -- it is on every send", () => {
+  const id = repo.createTemplate("No footer", "S {{company}}", "Body only.");
   repo.setTemplate(700, id);
-  db.query(`DELETE FROM sends WHERE company_id = 700`).run();
-  enqueue(700);
-  const row = db.query<{ body: string }, []>(
-    `SELECT body FROM sends WHERE company_id = 700 ORDER BY id DESC LIMIT 1`).get()!;
-  expect(row.body).toBe("Body only.");
-  expect(row.body).not.toContain("---");
-  db.query(`DELETE FROM sends WHERE company_id = 700`).run();   // free the dedup slot
-});
-
-test("the same template with the footer on appends it", () => {
-  const t = repo.listTemplates().find((x) => x.name === "No footer")!;
-  repo.updateTemplate(t.id, t.name, t.subject, t.body, true);
   db.query(`DELETE FROM sends WHERE company_id = 700`).run();
   enqueue(700);
   const row = db.query<{ body: string }, []>(
     `SELECT body FROM sends WHERE company_id = 700 ORDER BY id DESC LIMIT 1`).get()!;
   expect(row.body).toContain("---");
   expect(row.body).toContain("1 Test St, Huntsville AL");
+  expect(row.body.toLowerCase()).toContain("unsubscribe");
   // Leave company 700 as the later tests expect to find it.
   db.query(`DELETE FROM sends WHERE company_id = 700`).run();
   db.query(`UPDATE companies SET template_id = NULL WHERE id = 700`).run();

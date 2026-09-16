@@ -156,9 +156,10 @@ ensureColumn("companies", "sender_name", "TEXT");
 ensureColumn("sends", "sender_name", "TEXT");
 // Who sent it. Null on rows queued before accounts existed.
 ensureColumn("sends", "student_id", "INTEGER REFERENCES students(id)");
-// Whether this template's messages carry the identity footer. Defaults on, so
-// templates written before the toggle existed keep the behaviour they had.
-ensureColumn("templates", "include_footer", "INTEGER NOT NULL DEFAULT 1");
+// A leftover column from when the CAN-SPAM footer was opt-in per template
+// (1.4.0). It is unconditional now (see mail/render.ts#footer), so nothing
+// reads or writes this column any more; it is left in place on existing
+// databases rather than migrated away.
 
 db.exec(`
   -- carry the single legacy category into the many-to-many table

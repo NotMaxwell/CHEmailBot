@@ -264,8 +264,7 @@ routes.get("/company/:id", (c) => {
     try {
       preview = {
         subject: render(resolved.template.subject, ctx),
-        body: render(resolved.template.body, ctx)
-              + (resolved.template.include_footer ? footer() : ""),
+        body: render(resolved.template.body, ctx) + footer(),
       };
     } catch (e) {
       preview = { subject: "(template error)", body: String(e) };
@@ -488,15 +487,14 @@ routes.post("/templates", async (c) => {
   const b = await c.req.parseBody();
   return c.redirect(await act("/campaigns", () =>
     repo.createTemplate(String(b["name"] ?? ""), String(b["subject"] ?? ""),
-                        String(b["body"] ?? ""), b["include_footer"] === "1")));
+                        String(b["body"] ?? ""))));
 });
 
 routes.post("/templates/:id", async (c) => {
   const b = await c.req.parseBody();
   return c.redirect(await act("/campaigns", () =>
     repo.updateTemplate(int(c.req.param("id")),
-      String(b["name"] ?? ""), String(b["subject"] ?? ""), String(b["body"] ?? ""),
-      b["include_footer"] === "1")));
+      String(b["name"] ?? ""), String(b["subject"] ?? ""), String(b["body"] ?? ""))));
 });
 
 routes.post("/templates/:id/delete", async (c) =>
