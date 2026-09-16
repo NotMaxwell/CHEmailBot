@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.1.0] — 2026-09-15
+
+### Added
+- Docker: `Dockerfile` and `docker-compose.yml`. Published to `127.0.0.1` only,
+  health-checked, `restart: unless-stopped`, with `./data` mounted so the
+  database and backups stay on the host. Playwright browsers are kept out of
+  the image — form assist stays on the host, where it can show you a browser.
+
+### Changed
+- The Gmail token is stored in `data/` so a container rebuild does not lose it
+  (override with `GMAIL_TOKEN_PATH`).
+- The startup warning about binding `0.0.0.0` now distinguishes a container
+  (normal; the published port decides reachability) from the host (a real
+  exposure).
+
 ## [1.0.0] — 2026-09-14
 
 First release. Scrape, review, discovery, form assist, campaigns, tags, and the

@@ -40,7 +40,8 @@ export const config = {
     clientSecret: env("GMAIL_CLIENT_SECRET"),
     redirectUri: env("GMAIL_REDIRECT_URI", "http://localhost:3000/oauth/callback"),
     sender: env("GMAIL_SENDER"),
-    tokenPath: join(ROOT, ".gmail-token.json"),
+    // Inside data/ so it survives a container rebuild along with the database.
+    tokenPath: join(ROOT, env("GMAIL_TOKEN_PATH", "data/.gmail-token.json")),
   },
 
   send: {

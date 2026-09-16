@@ -74,6 +74,25 @@ the server is started. SQLite's WAL survives a hard kill.
 bun run backup              # timestamped snapshot → data/backups/
 ```
 
+## Running in Docker
+
+```sh
+bun run docker:up      # build and start
+bun run docker:logs
+bun run docker:down
+```
+
+- **Stays up.** `restart: unless-stopped` brings it back after a crash or a
+  reboot. (Docker deliberately ignores that if *you* stop the container.)
+- **Your data stays on the host.** `./data` is mounted, so the database,
+  backups, and the Gmail token survive a rebuild.
+- **Secrets are not in the image.** `.env` is read at runtime via `env_file`.
+- **The published port is `127.0.0.1:3000:3000`.** Do not change it to
+  `3000:3000` — this UI has no login. Inside the container the app listens on
+  `0.0.0.0`, which is required and safe *because* of that publish line.
+- **Form assist is not containerized.** It drives a headed browser you click
+  Submit in, so run it on the host: `bun run form:assist <id>`.
+
 ## Commands
 
 | Command | Does |

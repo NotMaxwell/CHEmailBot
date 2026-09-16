@@ -1,0 +1,25 @@
+services:
+  chemailbot:
+    build: .
+    image: chemailbot:1.1.0
+    container_name: chemailbot
+    # Brings the app back after a crash, a Docker restart, or a reboot.
+    restart: unless-stopped
+    ports:
+      # Loopback ONLY. Plain "3000:3000" would publish this unauthenticated UI
+      # to every interface -- the exact hole 1.0.0 closed.
+      - "127.0.0.1:3000:3000"
+    env_file: .env
+    environment:
+      # Overrides .env: must bind all interfaces INSIDE the container.
+      HOST: "0.0.0.0"
+    volumes:
+      # The database, backups, and the Gmail token live on the host, so a
+      # rebuild never loses them.
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

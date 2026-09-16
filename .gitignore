@@ -7,3 +7,4 @@ data/*.db-shm
 bun.lockb
 .DS_Store
 data/backups/
+data/.gmail-token.json
