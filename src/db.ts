@@ -156,6 +156,9 @@ ensureColumn("companies", "sender_name", "TEXT");
 ensureColumn("sends", "sender_name", "TEXT");
 // Who sent it. Null on rows queued before accounts existed.
 ensureColumn("sends", "student_id", "INTEGER REFERENCES students(id)");
+// Whether this template's messages carry the identity footer. Defaults on, so
+// templates written before the toggle existed keep the behaviour they had.
+ensureColumn("templates", "include_footer", "INTEGER NOT NULL DEFAULT 1");
 
 db.exec(`
   -- carry the single legacy category into the many-to-many table

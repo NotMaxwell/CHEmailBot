@@ -79,18 +79,19 @@ export const emailsFor = (id: number) =>
     `SELECT * FROM emails WHERE company_id=? ORDER BY is_primary DESC, confidence DESC`,
   ).all(id);
 
+export interface Template {
+  id: number; name: string; subject: string; body: string;
+  /** 1 = append the organisation footer to this template's messages. */
+  include_footer: 0 | 1;
+}
+
 export const listTemplates = () =>
-  db.query<{ id: number; name: string; subject: string; body: string }, []>(
-    `SELECT * FROM templates ORDER BY name`,
-  ).all();
+  db.query<Template, []>(`SELECT * FROM templates ORDER BY name`).all();
 
 export const getTemplate = (id: number) =>
-  db.query<{ id: number; name: string; subject: string; body: string }, [number]>(
-    `SELECT * FROM templates WHERE id=?`,
-  ).get(id);
+  db.query<Template, [number]>(`SELECT * FROM templates WHERE id=?`).get(id);
 
-export interface TemplateRow {
-  id: number; name: string; subject: string; body: string;
+export interface TemplateRow extends Template {
   /** Companies that picked this one explicitly (step 4). */
   companies: number;
   /** Messages already queued or sent with it, across all campaigns. */
@@ -132,7 +133,7 @@ export type TemplateSource = "company" | "campaign";
  */
 export function resolveTemplateFor(
   company: Pick<Company, "template_id">, campaign = currentCampaign(),
-): { template: { id: number; name: string; subject: string; body: string }; source: TemplateSource } | null {
+): { template: Template; source: TemplateSource } | null {
   if (company.template_id) {
     const own = getTemplate(company.template_id);
     if (own) return { template: own, source: "company" };
@@ -465,22 +466,27 @@ function validateTemplate(name: string, subject: string, body: string) {
   render(body, SAMPLE_CONTEXT);
 }
 
-export function createTemplate(name: string, subject: string, body: string): number {
+export function createTemplate(
+  name: string, subject: string, body: string, includeFooter = true,
+): number {
   validateTemplate(name, subject, body);
   try {
-    return Number(db.query(`INSERT INTO templates (name, subject, body) VALUES (?, ?, ?)`)
-      .run(name.trim(), subject, body).lastInsertRowid);
+    return Number(db.query(
+      `INSERT INTO templates (name, subject, body, include_footer) VALUES (?, ?, ?, ?)`)
+      .run(name.trim(), subject, body, includeFooter ? 1 : 0).lastInsertRowid);
   } catch (e) {
     if (String(e).includes("UNIQUE")) throw new Error(`A template named "${name.trim()}" already exists.`);
     throw e;
   }
 }
 
-export function updateTemplate(id: number, name: string, subject: string, body: string) {
+export function updateTemplate(
+  id: number, name: string, subject: string, body: string, includeFooter = true,
+) {
   validateTemplate(name, subject, body);
   try {
-    db.query(`UPDATE templates SET name = ?, subject = ?, body = ? WHERE id = ?`)
-      .run(name.trim(), subject, body, id);
+    db.query(`UPDATE templates SET name = ?, subject = ?, body = ?, include_footer = ? WHERE id = ?`)
+      .run(name.trim(), subject, body, includeFooter ? 1 : 0, id);
   } catch (e) {
     if (String(e).includes("UNIQUE")) throw new Error(`A template named "${name.trim()}" already exists.`);
     throw e;

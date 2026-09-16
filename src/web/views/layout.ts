@@ -52,6 +52,7 @@ ${opts.refresh ? '<meta http-equiv="refresh" content="4">' : ""}
   .banner{background:var(--card);border-left:3px solid var(--accent);padding:.6rem .8rem;margin-bottom:1rem}
   nav .who{margin-left:auto;font-weight:400;color:var(--mut);display:flex;gap:.4rem;align-items:center}
   button.linkish{border:0;background:none;color:var(--accent);padding:0;font:inherit;cursor:pointer}
+  label.check{display:flex;gap:.35rem;align-items:center;font-size:14px;color:var(--mut)}
 </style></head><body>
 <nav><a href="/">Review queue</a><a href="/campaigns">Campaigns &amp; templates</a><a href="/history">Past companies</a><a href="/suppressions">Do not contact</a><a href="/log">Send log</a>
 ${opts.student ? `<span class="who">Sending as <b>${esc(opts.student.name)}</b>${

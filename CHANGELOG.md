@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.4.0] — 2026-09-16
+
+### Changed
+- **The footer now names the organisation, not the person**, and is opt-in per
+  template. It prints `SENDER_ORG` (falling back to `SENDER_NAME`) and the
+  postal address. Whoever wrote the message already signs it in the body, so
+  repeating them below the rule said nothing new; what a cold recipient cannot
+  get from the body is who the team is and where to find them.
+- Templates carry an **Append the footer** checkbox, set when you create or edit
+  one. Unticked, that template sends the body alone. Existing templates default
+  to on, so nothing changes until you say so. The campaigns tab shows the
+  footer exactly as it will appear, so the toggle is not abstract.
+- `SENDER_POSTAL_ADDRESS` is now required only when a message actually carries
+  the footer, checked as the message is built rather than globally at startup.
+  `SENDER_NAME` is still required unconditionally — it is the From display name
+  and the signature.
+
 ## [1.3.1] — 2026-09-16
 
 ### Added

@@ -53,18 +53,20 @@ export function contextFor(c: Company, studentName?: string): MergeContext {
 }
 
 /**
- * Identity footer, appended to every outbound body.
+ * Identity footer: the ORGANISATION and its postal address.
  *
- * Sender name and a real postal address only. This outreach is a sponsorship
- * solicitation rather than commercial advertising, so it carries no opt-out
- * line; opt-outs are handled by the do-not-contact list, which blocks a company
- * at send time whether the request arrived by reply, phone, or in person.
+ * Deliberately not the individual -- whoever wrote the message has already
+ * signed it in the body, and repeating them here said nothing new. What a
+ * recipient cannot get from the body is who the team is and where they are,
+ * which is also what makes a cold approach answerable rather than anonymous.
  *
- * `senderName` overrides the signature line only -- the postal address
- * identifies the sending organization and never varies per recipient.
+ * Per-template: a template with include_footer off appends nothing. Opt-outs
+ * are handled by the do-not-contact list either way -- this outreach is a
+ * sponsorship solicitation, not commercial advertising, so it carries no
+ * opt-out line in either case.
  */
-export function footer(senderName?: string): string {
-  const who = senderName?.trim() || config.canSpam.senderName;
-  const org = config.canSpam.senderOrg.trim();
-  return `\n\n---\n${org ? `${who}, ${org}` : who}\n${config.canSpam.postalAddress}`;
+export function footer(): string {
+  const org = config.canSpam.senderOrg.trim() || config.canSpam.senderName;
+  const address = config.canSpam.postalAddress;
+  return `\n\n---\n${org}${address ? `\n${address}` : ""}`;
 }

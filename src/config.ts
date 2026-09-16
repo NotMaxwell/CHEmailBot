@@ -80,16 +80,16 @@ export const config = {
 } as const;
 
 /**
- * Throws unless the message can identify its sender. Both fields land in the
- * footer of every outbound message, so a blank one would mail a stranger an
- * anonymous solicitation.
+ * Throws unless the message can name who sent it. SENDER_NAME is always used
+ * -- it is the From display name and the signature -- so it is required
+ * unconditionally.
+ *
+ * SENDER_POSTAL_ADDRESS is checked separately, at the point a message that
+ * actually carries the footer is built (see enqueue), because a template with
+ * the footer switched off never uses it.
  */
 export function assertSendable(): void {
-  const missing = (["senderName", "postalAddress"] as const)
-    .filter((k) => !config.canSpam[k]);
-  if (missing.length) {
-    throw new Error(
-      `Refusing to send: missing sender identity in .env -> ${missing.join(", ")}`,
-    );
+  if (!config.canSpam.senderName) {
+    throw new Error("Refusing to send: missing sender identity in .env -> senderName");
   }
 }

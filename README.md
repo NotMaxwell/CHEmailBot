@@ -141,8 +141,9 @@ bun run docker:down
 2. **Deliverability:** a few hundred cold emails from a cold personal Gmail will
    land in spam permanently. Use a dedicated domain with SPF, DKIM, and DMARC,
    and keep the warm-up ramp.
-3. **CAN-SPAM:** a real postal address and a working unsubscribe address.
-   Record opt-outs within 10 business days.
+3. **Identity:** `SENDER_NAME`, `SENDER_ORG`, and a real `SENDER_POSTAL_ADDRESS`.
+   The footer prints the organisation and its address, and is per-template —
+   untick **Append the footer** and that template sends the body alone.
 4. Preview with `bun run test:self`, then set `DRY_RUN=0` and
    `bun run test:self --send` to put **one** real message in your own inbox.
    Read what arrived, headers included.

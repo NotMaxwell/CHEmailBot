@@ -105,7 +105,6 @@ test("clearing choices sends everyone back to the campaign default", () => {
 test("with no override the signature and From name come from .env", () => {
   repo.setSenderName(700, "");
   expect(senderNameFor(company())).toBe("Test Sender");
-  expect(footer()).toContain("Test Sender");
   expect(buildRaw("to@x.example", "s", "b")).toContain("From: Test Sender <");
 });
 
@@ -114,18 +113,52 @@ test("an override changes the signature, the merge field, and the From name", ()
   const c = company();
   expect(senderNameFor(c)).toBe("Max M");
   expect(contextFor(c).sender_name).toBe("Max M");
-  expect(footer("Max M")).toContain("Max M");
   expect(buildRaw("to@x.example", "s", "b", "Max M")).toContain("From: Max M <");
 });
 
-test("the override never rewrites the postal address", () => {
-  const f = footer("Max M");
-  expect(f).toContain("1 Test St, Huntsville AL");
+test("the footer names the organisation and its address, not the person", () => {
+  const before = config.canSpam.senderOrg;
+  try {
+    (config.canSpam as { senderOrg: string }).senderOrg = "Critical Hit Robotics";
+    const f = footer();
+    expect(f).toContain("Critical Hit Robotics");
+    expect(f).toContain("1 Test St, Huntsville AL");
+    expect(f).not.toContain("Max M");           // the body already signs the person
+  } finally {
+    (config.canSpam as { senderOrg: string }).senderOrg = before;
+  }
 });
 
 test("the footer carries no opt-out line and the headers no List-Unsubscribe", () => {
-  expect(footer("Max M")).not.toContain("unsubscribe");
+  expect(footer()).not.toContain("unsubscribe");
   expect(buildRaw("to@x.example", "s", "b")).not.toContain("List-Unsubscribe");
+});
+
+test("a template with the footer off sends the body alone", () => {
+  const id = repo.createTemplate("No footer", "S {{company}}", "Body only.", false);
+  expect(repo.getTemplate(id)!.include_footer).toBe(0);
+  repo.setTemplate(700, id);
+  db.query(`DELETE FROM sends WHERE company_id = 700`).run();
+  enqueue(700);
+  const row = db.query<{ body: string }, []>(
+    `SELECT body FROM sends WHERE company_id = 700 ORDER BY id DESC LIMIT 1`).get()!;
+  expect(row.body).toBe("Body only.");
+  expect(row.body).not.toContain("---");
+  db.query(`DELETE FROM sends WHERE company_id = 700`).run();   // free the dedup slot
+});
+
+test("the same template with the footer on appends it", () => {
+  const t = repo.listTemplates().find((x) => x.name === "No footer")!;
+  repo.updateTemplate(t.id, t.name, t.subject, t.body, true);
+  db.query(`DELETE FROM sends WHERE company_id = 700`).run();
+  enqueue(700);
+  const row = db.query<{ body: string }, []>(
+    `SELECT body FROM sends WHERE company_id = 700 ORDER BY id DESC LIMIT 1`).get()!;
+  expect(row.body).toContain("---");
+  expect(row.body).toContain("1 Test St, Huntsville AL");
+  // Leave company 700 as the later tests expect to find it.
+  db.query(`DELETE FROM sends WHERE company_id = 700`).run();
+  db.query(`UPDATE companies SET template_id = NULL WHERE id = 700`).run();
 });
 
 test("a whitespace-only override falls back rather than sending unsigned", () => {
@@ -144,8 +177,10 @@ test("the queued send freezes the sender name it was built with", () => {
   enqueue(700);
   const row = db.query<{ sender_name: string; body: string }, [number]>(
     `SELECT sender_name, body FROM sends WHERE company_id = ? ORDER BY id DESC LIMIT 1`).get(700)!;
+  // The person is frozen on the row (and drives the From line); the footer
+  // names the organisation, so it is deliberately NOT in the body here.
   expect(row.sender_name).toBe("Max M");
-  expect(row.body).toContain("Max M");
+  expect(row.body).toContain("Test Sender");   // footer falls back to SENDER_NAME, no org set
 });
 
 // --- the new tab ------------------------------------------------------------
@@ -182,9 +217,9 @@ test("the org is appended to whoever signs, on the From line and the footer", ()
     expect(senderNameFor(c, "Alice R")).toBe("Alice R");
     expect(displayNameFor(c, "Alice R")).toBe("Alice R, Critical Hit Robotics");
 
-    expect(footer("Alice R")).toContain("Alice R, Critical Hit Robotics");
     expect(buildRaw("to@x.example", "s", "b", "Alice R"))
       .toContain("From: Alice R, Critical Hit Robotics <");
+    expect(footer()).toContain("Critical Hit Robotics");
   } finally {
     (config.canSpam as { senderOrg: string }).senderOrg = before;
   }
@@ -196,7 +231,7 @@ test("with no org configured the name stands alone", () => {
     (config.canSpam as { senderOrg: string }).senderOrg = "";
     const c = { sender_name: null } as { sender_name: string | null };
     expect(displayNameFor(c, "Alice R")).toBe("Alice R");
-    expect(footer("Alice R")).toContain("\n---\nAlice R\n");   // no ", org" suffix
+    expect(footer()).toContain("Test Sender");        // falls back to SENDER_NAME
   } finally {
     (config.canSpam as { senderOrg: string }).senderOrg = before;
   }

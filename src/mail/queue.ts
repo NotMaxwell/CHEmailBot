@@ -139,10 +139,17 @@ export function enqueue(companyId: number, student?: Sender): void {
   // already established that one of them resolves.
   const template = resolveTemplateFor(company)!.template;
 
+  // The postal address is only required by templates that actually print it.
+  if (template.include_footer && !config.canSpam.postalAddress) {
+    throw new Error(
+      `Refusing to send: "${template.name}" appends the footer, but SENDER_POSTAL_ADDRESS ` +
+      `is not set in .env. Fill it in, or untick "Append the footer" on that template.`);
+  }
+
   const ctx = contextFor(company, student?.name);
   const who = senderNameFor(company, student?.name);
   const subject = render(template.subject, ctx);
-  const body = render(template.body, ctx) + footer(who);
+  const body = render(template.body, ctx) + (template.include_footer ? footer() : "");
 
   try {
     db.query(
@@ -181,7 +188,7 @@ export function recordFormSend(companyId: number, student?: Sender): void {
     `form:${company.chamber_slug}`,           // no address exists; keep the row unique
     template?.id ?? null,
     subject,
-    template ? render(template.body, ctx) + footer(senderNameFor(company, student?.name))
+    template ? render(template.body, ctx) + (template.include_footer ? footer() : "")
              : "(submitted via company contact form)",
     currentCampaign(),
     senderNameFor(company, student?.name),
