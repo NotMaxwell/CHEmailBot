@@ -108,16 +108,26 @@ export function priorContactWarning(companyId: number): string | null {
  *  what was sent and when without anyone having to tag by hand. The rendered
  *  subject goes in the note -- putting it in the tag NAME would mint a new
  *  single-use tag per company, since subjects carry merge fields. */
-function tagAsMessaged(companyId: number, campaign: string, subject: string): void {
-  try { addTag(companyId, `Messaged: ${campaign}`, "label", subject); }
-  catch (err) { console.error(`auto-tag failed for company ${companyId}:`, err); }
+function tagAsMessaged(
+  companyId: number, campaign: string, subject: string, student?: Sender,
+): void {
+  try {
+    addTag(companyId, `Messaged: ${campaign}`, "label", subject);
+    // Who worked this company. A tag per student rather than a note, so the
+    // history page's existing tag filter answers "what did Alice send?"
+    // without a new report.
+    if (student) addTag(companyId, `Student: ${student.name}`, "label");
+  } catch (err) { console.error(`auto-tag failed for company ${companyId}:`, err); }
 }
+
+/** The signed-in account a send is attributed to. */
+export interface Sender { id: number; name: string }
 
 /**
  * Gate 1-4, then insert a 'queued' row holding the FULLY RENDERED copy, so the
  * log stays truthful even if you edit the template afterwards.
  */
-export function enqueue(companyId: number): void {
+export function enqueue(companyId: number, student?: Sender): void {
   assertSendable();                                   // gate 2
 
   const blockers = blockersFor(companyId);            // gates 3 + 4
@@ -129,17 +139,18 @@ export function enqueue(companyId: number): void {
   // already established that one of them resolves.
   const template = resolveTemplateFor(company)!.template;
 
-  const ctx = contextFor(company);
-  const who = senderNameFor(company);
+  const ctx = contextFor(company, student?.name);
+  const who = senderNameFor(company, student?.name);
   const subject = render(template.subject, ctx);
   const body = render(template.body, ctx) + footer(who);
 
   try {
     db.query(
       `INSERT INTO sends (company_id, email_address, template_id, subject, body,
-                          channel, status, campaign, sender_name)
-       VALUES (?, ?, ?, ?, ?, 'gmail', 'queued', ?, ?)`,
-    ).run(companyId, primary.address, template.id, subject, body, currentCampaign(), who);
+                          channel, status, campaign, sender_name, student_id)
+       VALUES (?, ?, ?, ?, ?, 'gmail', 'queued', ?, ?, ?)`,
+    ).run(companyId, primary.address, template.id, subject, body, currentCampaign(),
+          who, student?.id ?? null);
   } catch (err) {
     // The partial unique index is the real guarantee; translate it for the UI.
     if (String(err).includes("UNIQUE constraint failed")) {
@@ -152,30 +163,31 @@ export function enqueue(companyId: number): void {
 
 /** Records an outreach made by hand through a company's own contact form,
  *  so form contacts count against the same dedup guarantee as email. */
-export function recordFormSend(companyId: number): void {
+export function recordFormSend(companyId: number, student?: Sender): void {
   const company = getCompany(companyId);
   if (!company) throw new Error("Company not found.");
   if (alreadyContacted(companyId)) throw new Error("Already queued or sent.");
   const suppressed = companySuppression(companyId);   // an opt-out covers forms too
   if (suppressed) throw new Error(suppressed);
   const template = resolveTemplateFor(company)?.template ?? null;
-  const ctx = contextFor(company);
+  const ctx = contextFor(company, student?.name);
   const subject = template ? render(template.subject, ctx) : "(contact form)";
   db.query(
     `INSERT INTO sends (company_id, email_address, template_id, subject, body,
-                        channel, status, sent_at, campaign, sender_name)
-     VALUES (?, ?, ?, ?, ?, 'form', 'sent', datetime('now'), ?, ?)`,
+                        channel, status, sent_at, campaign, sender_name, student_id)
+     VALUES (?, ?, ?, ?, ?, 'form', 'sent', datetime('now'), ?, ?, ?)`,
   ).run(
     companyId,
     `form:${company.chamber_slug}`,           // no address exists; keep the row unique
     template?.id ?? null,
     subject,
-    template ? render(template.body, ctx) + footer(senderNameFor(company))
+    template ? render(template.body, ctx) + footer(senderNameFor(company, student?.name))
              : "(submitted via company contact form)",
     currentCampaign(),
-    senderNameFor(company),
+    senderNameFor(company, student?.name),
+    student?.id ?? null,
   );
-  tagAsMessaged(companyId, currentCampaign(), subject);
+  tagAsMessaged(companyId, currentCampaign(), subject, student);
 }
 
 export interface DrainReport {
@@ -186,7 +198,9 @@ export interface DrainReport {
 
 interface QueuedRow { id: number; company_id: number; email_address: string;
   subject: string; body: string; attempts: number; campaign: string;
-  sender_name: string | null }
+  sender_name: string | null;
+  /** Who queued it. Joined in so the send tag names them without a second read. */
+  student_id: number | null; student_name: string | null }
 
 /**
  * Drain the queue: one message per jittered interval, stopping at the day's cap.
@@ -206,9 +220,11 @@ export async function drain(
   };
 
   const queued = db.query<QueuedRow, []>(
-    `SELECT id, company_id, email_address, subject, body, attempts, campaign, sender_name
-     FROM sends WHERE status = 'queued' AND attempted_at IS NULL
-     ORDER BY queued_at`).all();
+    `SELECT s.id, s.company_id, s.email_address, s.subject, s.body, s.attempts,
+            s.campaign, s.sender_name, s.student_id, st.name AS student_name
+     FROM sends s LEFT JOIN students st ON st.id = s.student_id
+     WHERE s.status = 'queued' AND s.attempted_at IS NULL
+     ORDER BY s.queued_at`).all();
 
   for (const row of queued) {
     if (report.used >= budget.cap) {
@@ -250,7 +266,9 @@ export async function drain(
          sent_at=datetime('now'), error=NULL WHERE id=?`,
       ).run(res.messageId, res.threadId, row.id);
       recordUsage(budget.day, budget.cap);
-      tagAsMessaged(row.company_id, row.campaign, row.subject);
+      tagAsMessaged(row.company_id, row.campaign, row.subject,
+                    row.student_id && row.student_name
+                      ? { id: row.student_id, name: row.student_name } : undefined);
       report.sent++;
       report.used++;
     } catch (err) {

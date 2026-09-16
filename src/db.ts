@@ -154,6 +154,8 @@ ensureColumn("companies", "sender_name", "TEXT");
 // Copied onto the send at queue time so the From line still matches the
 // signature months later, even if the company row is edited afterwards.
 ensureColumn("sends", "sender_name", "TEXT");
+// Who sent it. Null on rows queued before accounts existed.
+ensureColumn("sends", "student_id", "INTEGER REFERENCES students(id)");
 
 db.exec(`
   -- carry the single legacy category into the many-to-many table

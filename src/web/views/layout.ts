@@ -6,7 +6,12 @@ export const esc = (s: unknown): string =>
 /** `refresh` reloads the page every few seconds -- used while a background job
  *  runs, so progress is visible without the old "reload to refresh" chore. */
 export const layout = (
-  title: string, body: string, stats?: Record<string, number>, opts: { refresh?: boolean } = {},
+  title: string, body: string, stats?: Record<string, number>,
+  opts: {
+    refresh?: boolean;
+    /** Signed-in account, shown in the header so attribution is never a surprise. */
+    student?: { name: string; role: "student" | "admin" } | null;
+  } = {},
 ) => `<!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -45,8 +50,14 @@ ${opts.refresh ? '<meta http-equiv="refresh" content="4">' : ""}
   .row{display:flex;gap:.75rem;align-items:center;flex-wrap:wrap}
   nav{flex-wrap:wrap} .scroll{overflow-x:auto}
   .banner{background:var(--card);border-left:3px solid var(--accent);padding:.6rem .8rem;margin-bottom:1rem}
+  nav .who{margin-left:auto;font-weight:400;color:var(--mut);display:flex;gap:.4rem;align-items:center}
+  button.linkish{border:0;background:none;color:var(--accent);padding:0;font:inherit;cursor:pointer}
 </style></head><body>
-<nav><a href="/">Review queue</a><a href="/campaigns">Campaigns &amp; templates</a><a href="/history">Past companies</a><a href="/suppressions">Do not contact</a><a href="/log">Send log</a></nav>
+<nav><a href="/">Review queue</a><a href="/campaigns">Campaigns &amp; templates</a><a href="/history">Past companies</a><a href="/suppressions">Do not contact</a><a href="/log">Send log</a>
+${opts.student ? `<span class="who">Sending as <b>${esc(opts.student.name)}</b>${
+  opts.student.role === "admin" ? ' <span class="pill ok">admin</span>' : ""}
+  · <a href="/accounts">Account</a>
+  · <form method="post" action="/logout" class="inline"><button class="linkish">Sign out</button></form></span>` : ""}</nav>
 ${stats ? `<ul class="steps">
   <li><span>1 · Scraped</span><b>${stats.companies}</b></li>
   <li><span>2 · Verified co.</span><b>${stats.approved}</b></li>

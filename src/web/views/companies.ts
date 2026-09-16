@@ -110,12 +110,14 @@ export function companyPage(
   priorWarning: string | null = null,
   suppression: string | null = null,
   opts: {
-    /** SENDER_NAME from .env -- what signs the message when no override is set. */
+    /** What signs the message when this company has no override of its own. */
     defaultSenderName: string;
+    /** Where that fallback came from, so the UI can say. */
+    defaultSenderSource: "account" | "env";
     campaign: string;
     /** What will actually send, and whether it was chosen here or inherited. */
     resolvedTemplate: { name: string; source: "company" | "campaign" } | null;
-  } = { defaultSenderName: "", campaign: "", resolvedTemplate: null },
+  } = { defaultSenderName: "", defaultSenderSource: "env", campaign: "", resolvedTemplate: null },
 ): string {
   const primary = emails.find((e) => e.is_primary === 1);
   const site = normalizeWebsite(c.website);   // only ever link to http(s)
@@ -178,12 +180,16 @@ ${contacted ? `<div class="banner"><b>Already ${esc(contacted.status)}</b>
            value="${esc(c.sender_name ?? "")}"
            placeholder="${esc(opts.defaultSenderName)}" aria-label="Your name on this message">
     <button>${c.sender_name ? "Update name" : "Use this name"}</button>
-    ${c.sender_name ? `<span class="pill ok">signed ${esc(c.sender_name)}</span>`
-                    : `<span class="mut">defaulting to <b>${esc(opts.defaultSenderName)}</b> from .env</span>`}
+    ${c.sender_name
+      ? `<span class="pill warn">overridden: ${esc(c.sender_name)}</span>`
+      : `<span class="mut">signing as <b>${esc(opts.defaultSenderName)}</b> ${
+          opts.defaultSenderSource === "account"
+            ? "— your account" : "— SENDER_NAME in .env"}</span>`}
   </form>
-  <p class="mut" style="margin:.6rem 0 0">Signs the message and sets the name on the
-    From line. The address itself is always the connected mailbox, and the postal
-    address stays as configured. Leave it blank to use the default.</p>
+  <p class="mut" style="margin:.6rem 0 0">Your account name signs the message and sets the
+    name on the From line, so a sponsor's reply reaches you. Fill this box only to sign
+    <em>this one company</em> as someone else; clearing it goes back to your account name.
+    The address is always the connected mailbox, and the postal address stays as configured.</p>
 </div>
 
 <div class="card">

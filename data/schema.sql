@@ -184,3 +184,41 @@ CREATE TABLE IF NOT EXISTS settings (
   value TEXT NOT NULL
 );
 INSERT OR IGNORE INTO settings (key, value) VALUES ('current_campaign', 'initial-outreach');
+
+-- ---------------------------------------------------------------------------
+-- students: who is doing the outreach. Real accounts, because a send is
+-- attributed to a person and that attribution ends up on the company record and
+-- in the log -- it should not be something anyone can casually claim.
+--
+-- The FIRST account created becomes an admin (see auth.needsBootstrap). Only an
+-- admin can create further accounts or reset a password, so there is no
+-- self-signup on an app that reaches real sponsors.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS students (
+  id            INTEGER PRIMARY KEY,
+  -- Display name. This SIGNS the email and appears on the company's tag, so it
+  -- should read the way a sponsor should see it.
+  name          TEXT NOT NULL,
+  username      TEXT NOT NULL UNIQUE,
+  password_hash TEXT NOT NULL,              -- argon2id, via Bun.password
+  role          TEXT NOT NULL DEFAULT 'student'
+                CHECK (role IN ('student','admin')),
+  -- Deactivating keeps the person's history and tags intact while ending their
+  -- access. Deleting an account that has sends against it is refused.
+  active        INTEGER NOT NULL DEFAULT 1,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  last_login_at TEXT
+);
+
+-- ---------------------------------------------------------------------------
+-- sessions: server-side, so revoking access is a DELETE rather than a wait.
+-- Only the SHA-256 of the cookie token is stored: a stolen database file does
+-- not hand over live sessions.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS sessions (
+  token_hash TEXT PRIMARY KEY,
+  student_id INTEGER NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  expires_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS sessions_student ON sessions(student_id);

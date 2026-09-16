@@ -152,29 +152,41 @@ test("a company listed under two categories keeps both", () => {
 // --- HTTP -------------------------------------------------------------------
 
 const form = { "content-type": "application/x-www-form-urlencoded" };
+const { sessionCookie } = await import("./helper.ts");
+const auth = async () => ({ cookie: await sessionCookie() });
 
 test("viewing the dashboard writes no budget row", async () => {
   const before = db.query<{ n: number }, []>(`SELECT COUNT(*) n FROM send_budget`).get()!.n;
-  const res = await routes.request("http://localhost/");
+  const res = await routes.request("http://localhost/", { headers: await auth() });
   expect(res.status).toBe(200);
   expect(db.query<{ n: number }, []>(`SELECT COUNT(*) n FROM send_budget`).get()!.n).toBe(before);
 });
 
 test("a form post from another origin is rejected (CSRF)", async () => {
   const res = await routes.request("http://localhost/company/999999/review", {
-    method: "POST", headers: { ...form, origin: "https://evil.example" }, body: "status=approved",
+    method: "POST", headers: { ...form, ...(await auth()), origin: "https://evil.example" },
+    body: "status=approved",
   });
   expect(res.status).toBe(403);
 });
 
 test("a form post from the app's own origin is accepted", async () => {
   const res = await routes.request("http://localhost/company/999999/review", {
-    method: "POST", headers: { ...form, origin: "http://localhost" }, body: "status=approved",
+    method: "POST", headers: { ...form, ...(await auth()), origin: "http://localhost" },
+    body: "status=approved",
   });
   expect(res.status).toBe(302);
+  // Not the auth gate's redirect -- that would make this test vacuous.
+  expect(res.headers.get("location")).not.toStartWith("/login");
+});
+
+test("an unauthenticated request is sent to the sign-in page", async () => {
+  const res = await routes.request("http://localhost/");
+  expect(res.status).toBe(302);
+  expect(res.headers.get("location")).toStartWith("/login");
 });
 
 test("pages refuse to be framed by other sites", async () => {
-  const res = await routes.request("http://localhost/templates");
+  const res = await routes.request("http://localhost/templates", { headers: await auth() });
   expect(res.headers.get("x-frame-options")).toBeTruthy();
 });

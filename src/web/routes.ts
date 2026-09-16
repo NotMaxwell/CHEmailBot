@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { getCookie, setCookie, deleteCookie } from "hono/cookie";
 import { csrf } from "hono/csrf";
 import { secureHeaders } from "hono/secure-headers";
 import { HTTPException } from "hono/http-exception";
@@ -7,6 +8,9 @@ import { queuePage, companyPage } from "./views/companies.ts";
 import { historyPage, tagSection } from "./views/history.ts";
 import { campaignsPage } from "./views/campaigns.ts";
 import { suppressionsPage } from "./views/suppressions.ts";
+import { loginPage, bootstrapPage, accountsPage } from "./views/accounts.ts";
+import * as auth from "../auth.ts";
+import type { Student } from "../auth.ts";
 import * as repo from "../repo.ts";
 import { db, currentCampaign, switchCampaign, companySuppression,
          setCampaignDefaultTemplate } from "../db.ts";
@@ -18,7 +22,7 @@ import { enqueue, drain, recordFormSend, blockersFor, peekBudget,
          priorContactWarning } from "../mail/queue.ts";
 import { authUrl, exchangeCode, isAuthorized } from "../mail/gmail.ts";
 
-export const routes = new Hono();
+export const routes = new Hono<{ Variables: { student: Student } }>();
 
 // Every state-changing action is a form POST to localhost. Without an origin
 // check, ANY web page you visit could submit those forms -- start scrapes, mark
@@ -28,6 +32,33 @@ routes.use(csrf());
 // Refuses cross-origin framing (a framed page could trick a click on "Drain
 // queue") and sets nosniff / referrer-policy.
 routes.use(secureHeaders());
+
+/**
+ * Everything except the sign-in page requires an account.
+ *
+ * This sits AFTER csrf() and secureHeaders() so an unauthenticated request is
+ * still origin-checked, and before every route, so adding a route cannot
+ * accidentally leave it open.
+ */
+routes.use("*", async (c, next) => {
+  const path = new URL(c.req.url).pathname;
+  if (path === "/login") return next();
+
+  const student = auth.studentForToken(getCookie(c, auth.SESSION_COOKIE));
+  if (!student) {
+    // Preserve where they were headed, but only as a local path -- echoing an
+    // arbitrary ?next= back into a redirect is an open redirect.
+    const next = path.startsWith("/") && !path.startsWith("//") ? path : "/";
+    return c.redirect(`/login?next=${encodeURIComponent(next)}`);
+  }
+  c.set("student", student);
+  await next();
+});
+
+/** Routes that change accounts are admin-only. */
+const requireAdmin = (c: { get: (k: "student") => Student }): void => {
+  if (c.get("student").role !== "admin") throw new Error("Only an admin can do that.");
+};
 
 routes.onError((err, c) => {
   if (err instanceof HTTPException) return err.getResponse();
@@ -86,6 +117,98 @@ async function act(back: string, fn: () => unknown | Promise<unknown>): Promise<
   try { await fn(); return back; } catch (e) { return fail(back, e); }
 }
 
+// --- accounts ---------------------------------------------------------------
+
+routes.get("/login", (c) => {
+  if (auth.studentForToken(getCookie(c, auth.SESSION_COOKIE))) return c.redirect("/");
+  const err = c.req.query("err") ?? null;
+  return c.html(auth.needsBootstrap()
+    ? bootstrapPage(err)
+    : loginPage(err, c.req.query("next") ?? null));
+});
+
+routes.post("/login", async (c) => {
+  const b = await c.req.parseBody();
+  const username = String(b["username"] ?? "");
+  const password = String(b["password"] ?? "");
+
+  try {
+    if (b["bootstrap"] === "1") {
+      await auth.bootstrapAdmin(String(b["name"] ?? ""), username, password);
+    }
+  } catch (e) { return c.redirect(fail("/login", e)); }
+
+  const session = await auth.login(username, password);
+  if (!session) {
+    // One message for both causes: naming which was wrong tells an outsider
+    // which usernames are real.
+    return c.redirect(fail("/login", new Error("That username and password do not match.")));
+  }
+  setCookie(c, auth.SESSION_COOKIE, session.token, {
+    httpOnly: true, sameSite: "Lax", path: "/", maxAge: auth.SESSION_MAX_AGE,
+  });
+  const next = String(b["next"] ?? "/");
+  return c.redirect(next.startsWith("/") && !next.startsWith("//") ? next : "/");
+});
+
+routes.post("/logout", (c) => {
+  auth.logout(getCookie(c, auth.SESSION_COOKIE));
+  deleteCookie(c, auth.SESSION_COOKIE, { path: "/" });
+  return c.redirect("/login");
+});
+
+routes.get("/accounts", (c) =>
+  c.html(layout("Accounts",
+    accountsPage(auth.listStudents(), c.get("student"),
+                 c.req.query("err") ?? null, c.req.query("ok") ?? null),
+    repo.stats(), { student: c.get("student") })));
+
+routes.post("/accounts", async (c) => {
+  const b = await c.req.parseBody();
+  return c.redirect(await act("/accounts", async () => {
+    requireAdmin(c);
+    await auth.createStudent(String(b["name"] ?? ""), String(b["username"] ?? ""),
+                             String(b["password"] ?? ""),
+                             b["role"] === "admin" ? "admin" : "student");
+  }));
+});
+
+/** Changing your own password needs no admin right; changing anyone else's does. */
+routes.post("/accounts/password", async (c) => {
+  const b = await c.req.parseBody();
+  const me = c.get("student");
+  const path = await act("/accounts", () => auth.setPassword(me.id, String(b["password"] ?? "")));
+  if (path === "/accounts") {
+    deleteCookie(c, auth.SESSION_COOKIE, { path: "/" });   // own sessions were dropped
+    return c.redirect("/login?err=" + encodeURIComponent("Password changed. Sign in again."));
+  }
+  return c.redirect(path);
+});
+
+routes.post("/accounts/:id/password", async (c) => {
+  const b = await c.req.parseBody();
+  return c.redirect(await act("/accounts", async () => {
+    requireAdmin(c);
+    await auth.setPassword(int(c.req.param("id")), String(b["password"] ?? ""));
+  }));
+});
+
+routes.post("/accounts/:id/active", async (c) => {
+  const b = await c.req.parseBody();
+  return c.redirect(await act("/accounts", () => {
+    requireAdmin(c);
+    auth.setActive(int(c.req.param("id")), b["active"] === "1");
+  }));
+});
+
+routes.post("/accounts/:id/role", async (c) => {
+  const b = await c.req.parseBody();
+  return c.redirect(await act("/accounts", () => {
+    requireAdmin(c);
+    auth.setRole(int(c.req.param("id")), b["role"] === "admin" ? "admin" : "student");
+  }));
+});
+
 // --- step 1: scrape ---------------------------------------------------------
 
 routes.post("/scrape/chamber", (c) => {
@@ -121,7 +244,7 @@ routes.get("/", (c) => {
       queued: stats.queued,
       campaign: currentCampaign(),
     }, err, lastJob),
-    stats, { refresh: running !== null && !err }));
+    stats, { refresh: running !== null && !err, student: c.get("student") }));
 });
 
 routes.get("/company/:id", (c) => {
@@ -132,15 +255,16 @@ routes.get("/company/:id", (c) => {
   const emails = repo.emailsFor(id);
   // The company's own choice if it made one, otherwise the campaign default --
   // the preview must show what would ACTUALLY send, not just an explicit pick.
+  const me = c.get("student");
   const resolved = repo.resolveTemplateFor(company);
 
   let preview: { subject: string; body: string } | null = null;
   if (resolved) {
-    const ctx = contextFor(company);
+    const ctx = contextFor(company, me.name);
     try {
       preview = {
         subject: render(resolved.template.subject, ctx),
-        body: render(resolved.template.body, ctx) + footer(senderNameFor(company)),
+        body: render(resolved.template.body, ctx) + footer(senderNameFor(company, me.name)),
       };
     } catch (e) {
       preview = { subject: "(template error)", body: String(e) };
@@ -163,12 +287,13 @@ routes.get("/company/:id", (c) => {
   return c.html(layout(company.name,
     companyPage(company, emails, repo.listTemplates(), preview, sent ?? null, blockers,
                 c.req.query("err") ?? null, priorContactWarning(id), companySuppression(id),
-                { defaultSenderName: config.canSpam.senderName,
+                { defaultSenderName: senderNameFor(company, me.name),
+                  defaultSenderSource: me.name.trim() ? "account" : "env",
                   campaign: currentCampaign(),
                   resolvedTemplate: resolved && {
                     name: resolved.template.name, source: resolved.source } }) +
     tagSection(id, repo.tagsFor(id), repo.listTags()),
-    repo.stats()));
+    repo.stats(), { student: c.get("student") }));
 });
 
 // --- steps 2-5: the per-company actions -------------------------------------
@@ -223,14 +348,16 @@ routes.post("/company/:id/email", async (c) => {
 
 routes.post("/company/:id/queue", async (c) => {
   const id = int(c.req.param("id"));
-  return c.redirect(await act(`/company/${id}`, () => enqueue(id)));
+  const me = c.get("student");
+  return c.redirect(await act(`/company/${id}`, () => enqueue(id, { id: me.id, name: me.name })));
 });
 
 /** Records a contact made by hand through the company's own form, so form
  *  outreach falls under the same dedup guarantee as email. */
 routes.post("/company/:id/form-sent", async (c) => {
   const id = int(c.req.param("id"));
-  return c.redirect(await act(`/company/${id}`, () => recordFormSend(id)));
+  const me = c.get("student");
+  return c.redirect(await act(`/company/${id}`, () => recordFormSend(id, { id: me.id, name: me.name })));
 });
 
 routes.post("/company/:id/suppress", async (c) => {
@@ -261,7 +388,7 @@ routes.get("/history", (c) => {
       repo.listHistory(tag || undefined, campaign ?? undefined),
       repo.listTags(), repo.listCampaigns(), currentCampaign(),
       tag, campaign, c.req.query("err") ?? null),
-    repo.stats()));
+    repo.stats(), { student: c.get("student") }));
 });
 
 // Superseded by /campaigns/switch. Kept so a stale open tab's form still works.
@@ -308,7 +435,7 @@ routes.get("/campaigns", (c) => {
     withOwn: counts.with,
     err: c.req.query("err") ?? null,
     notice: c.req.query("ok") ?? null,
-  }), repo.stats()));
+  }), repo.stats(), { student: c.get("student") }));
 });
 
 routes.post("/campaigns/switch", async (c) => {
@@ -375,7 +502,7 @@ routes.post("/templates/:id/delete", async (c) =>
 
 routes.get("/suppressions", (c) =>
   c.html(layout("Do not contact",
-    suppressionsPage(repo.listSuppressions(), c.req.query("err") ?? null), repo.stats())));
+    suppressionsPage(repo.listSuppressions(), c.req.query("err") ?? null), repo.stats(), { student: c.get("student") })));
 
 routes.post("/suppressions", async (c) => {
   const b = await c.req.parseBody();
@@ -405,7 +532,7 @@ ${rows.map((r) => `<tr><td>${esc(r.name)}</td><td>${esc(r.email_address)}</td>
   <td class="${r.status === "sent" ? "ok" : r.status === "queued" ? "warn" : "bad"}">${esc(r.status)}
       ${r.error ? `<br><span class="mut">${esc(r.error)}</span>` : ""}</td>
   <td class="mut">${esc(r.sent_at ?? r.queued_at)}</td></tr>`).join("")}
-</tbody></table></div>` : `<p class="mut">Nothing sent yet.</p>`, repo.stats()));
+</tbody></table></div>` : `<p class="mut">Nothing sent yet.</p>`, repo.stats(), { student: c.get("student") }));
 });
 
 // --- Gmail OAuth bootstrap --------------------------------------------------

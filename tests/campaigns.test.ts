@@ -15,6 +15,7 @@ const { blockersFor, enqueue } = await import("../src/mail/queue.ts");
 const { footer, senderNameFor, contextFor } = await import("../src/mail/render.ts");
 const { buildRaw } = await import("../src/mail/gmail.ts");
 const { routes } = await import("../src/web/routes.ts");
+const { sessionCookie } = await import("./helper.ts");
 
 // Own campaign and id range, so the shared in-memory DB can't collide with the
 // other suites whichever order they run in.
@@ -148,7 +149,8 @@ test("the queued send freezes the sender name it was built with", () => {
 // --- the new tab ------------------------------------------------------------
 
 test("the campaigns page renders and lists the current campaign", async () => {
-  const res = await routes.request("http://localhost/campaigns");
+  const res = await routes.request("http://localhost/campaigns",
+    { headers: { cookie: await sessionCookie() } });
   expect(res.status).toBe(200);
   const html = await res.text();
   expect(html).toContain(CAMPAIGN);
@@ -156,7 +158,8 @@ test("the campaigns page renders and lists the current campaign", async () => {
 });
 
 test("the old templates URL redirects to the merged tab", async () => {
-  const res = await routes.request("http://localhost/templates");
+  const res = await routes.request("http://localhost/templates",
+    { headers: { cookie: await sessionCookie() } });
   expect(res.status).toBe(302);
   expect(res.headers.get("location")).toBe("/campaigns");
 });

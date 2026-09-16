@@ -11,20 +11,27 @@ export function render(tpl: string, ctx: MergeContext): string {
 }
 
 /**
- * Who signs a given company's message: the per-company override if one was
- * entered, otherwise SENDER_NAME from .env. Blank and whitespace-only overrides
- * fall back rather than sending an unsigned message.
+ * Who signs a given company's message, most specific first:
+ *
+ *   1. the per-company override, if one was entered on the company page
+ *   2. the student sending it, so a sponsor's reply reaches the person who
+ *      actually wrote to them
+ *   3. SENDER_NAME from .env
+ *
+ * Blank and whitespace-only values fall through rather than sending unsigned.
  */
-export const senderNameFor = (c: Pick<Company, "sender_name">): string =>
-  c.sender_name?.trim() || config.canSpam.senderName;
+export const senderNameFor = (
+  c: Pick<Company, "sender_name">, studentName?: string,
+): string =>
+  c.sender_name?.trim() || studentName?.trim() || config.canSpam.senderName;
 
-export function contextFor(c: Company): MergeContext {
+export function contextFor(c: Company, studentName?: string): MergeContext {
   return {
     company: c.name.replace(/\s*\([^)]*\)\s*$/, "").trim(), // drop '(APT)' suffix
     city: c.city ?? "Huntsville",
     state: c.state ?? "AL",
     website: c.website ?? "",
-    sender_name: senderNameFor(c),
+    sender_name: senderNameFor(c, studentName),
   };
 }
 
