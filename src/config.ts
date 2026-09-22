@@ -68,12 +68,20 @@ export const config = {
     /** A hung connection must not freeze a scrape (and the single job lock). */
     timeoutMs: Number(env("SCRAPE_TIMEOUT_MS", "30000")),
     chamberBase: "https://cm.hsvchamber.org",
-    /** Verified against the live directory. robots.txt permits /list/category/*. */
+    /**
+     * Verified against the live directory (125 categories total). robots.txt
+     * permits /list/category/*. Added 2026-09-22, checked by member count:
+     * aerospace-defense-government-contractors (308 -- Redstone Arsenal's
+     * footprint on the directory) and manufacturing-industry (100 --
+     * fabrication/machine shops, a natural fit for build-season sponsors).
+     */
     techCategories: [
       "computers-it-web-1439",
       "consulting-information-technology-2560",
       "engineering-electronics-technical-2233",
       "technology-r-d-4568",
+      "aerospace-defense-government-contractors-2067",
+      "manufacturing-industry-475",
     ],
   },
 } as const;

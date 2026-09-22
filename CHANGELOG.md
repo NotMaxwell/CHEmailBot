@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.5.1] — 2026-09-22
+
+### Changed
+- **Chamber sync scope widened** from 4 to 6 categories: added
+  `aerospace-defense-government-contractors` (308 members -- Redstone Arsenal's
+  footprint on the directory) and `manufacturing-industry` (100 members --
+  fabrication/machine shops), alongside the original 4 IT/tech categories.
+  Re-run **Sync Chamber** to pull them in; existing companies are untouched
+  until then.
+
 ## [1.5.0] — 2026-09-16
 
 ### Changed

@@ -59,9 +59,12 @@ to check before submitting (`isConfident`, tested in `tests/forms.test.ts`).
 ## The finding that shaped everything
 
 "The Huntsville ledger" is the Huntsville/Madison County Chamber directory at
-`cm.hsvchamber.org` (GrowthZone/ChamberMaster). 125 categories, 4 of them
-technology-relevant, **246 unique companies in `technology-r-d` alone** — so
-expect roughly 300–400 total after dedup across all four.
+`cm.hsvchamber.org` (GrowthZone/ChamberMaster). 125 categories, 6 of them
+configured in `config.scrape.techCategories`: the original 4 tech categories
+(**246 unique companies in `technology-r-d` alone**), plus
+`aerospace-defense-government-contractors` (308) and `manufacturing-industry`
+(100), added 2026-09-22 to broaden the sponsor pool beyond pure IT/tech. Expect
+several hundred more companies after dedup once the sync is re-run.
 
 **It publishes no email addresses.** The contact slot on a member page is:
 
