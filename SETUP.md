@@ -404,8 +404,10 @@ Form assist stays on the host: it drives a headed browser you click Submit in.
 
 ## Running on a remote machine
 
-The UI has **no login**. Do not publish port 3000. Reach it over Tailscale or
-an SSH tunnel and leave the compose port line alone:
+The UI has a login and sign-up is admin-approved, so reaching port 3000 is not
+the same as getting in — but the database and `.env` are still readable by
+anyone with a shell on the box. Do not publish it. Reach it over Tailscale or an
+SSH tunnel and leave the compose port line alone:
 
 ```sh
 ssh -L 3000:127.0.0.1:3000 user@host

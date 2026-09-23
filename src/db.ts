@@ -136,11 +136,11 @@ export function priorContact(companyId: number): { campaign: string; sent_at: st
  * EXISTS, which silently ignores new columns on an existing database -- this
  * closes that gap so an older .db file still picks up schema additions.
  */
-export function ensureColumn(table: string, column: string, decl: string): void {
+export function ensureColumn(table: string, column: string, decl: string): boolean {
   const cols = db.query<{ name: string }, []>(`PRAGMA table_info(${table})`).all();
-  if (!cols.some((c) => c.name === column)) {
-    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${decl}`);
-  }
+  if (cols.some((c) => c.name === column)) return false;
+  db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${decl}`);
+  return true;                       // true ONLY on the run that adds it
 }
 ensureColumn("emails", "verified", "INTEGER NOT NULL DEFAULT 0");
 ensureColumn("companies", "template_id", "INTEGER REFERENCES templates(id)");
@@ -156,6 +156,14 @@ ensureColumn("companies", "sender_name", "TEXT");
 ensureColumn("sends", "sender_name", "TEXT");
 // Who sent it. Null on rows queued before accounts existed.
 ensureColumn("sends", "student_id", "INTEGER REFERENCES students(id)");
+// Sign-up is admin-approved, and NULL here means "still waiting". Every
+// account that already existed could already sign in, so the backfill runs on
+// the one pass that adds the column -- without it, an upgrade would lock the
+// whole team out and leave nobody able to approve anyone.
+if (ensureColumn("students", "approved_at", "TEXT")) {
+  db.exec(`UPDATE students SET approved_at = created_at`);
+}
+ensureColumn("students", "approved_by", "INTEGER REFERENCES students(id)");
 // A leftover column from when the CAN-SPAM footer was opt-in per template
 // (1.4.0). It is unconditional now (see mail/render.ts#footer), so nothing
 // reads or writes this column any more; it is left in place on existing

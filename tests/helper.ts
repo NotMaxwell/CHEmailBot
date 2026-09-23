@@ -17,7 +17,7 @@ export async function sessionCookie(): Promise<string> {
     await auth.createStudent("Test Runner", username, "test-password-1234", "admin");
   }
   const session = await auth.login(username, "test-password-1234");
-  if (!session) throw new Error("test sign-in failed");
+  if (!session.ok) throw new Error(`test sign-in failed: ${session.reason}`);
   return (cached = `${auth.SESSION_COOKIE}=${session.token}`);
 }
 

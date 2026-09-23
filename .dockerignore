@@ -13,3 +13,6 @@ tests
 *.md
 Dockerfile
 docker-compose.yml
+# deployment recipes: they describe how to run the image, not what is in it
+deploy
+render.yaml

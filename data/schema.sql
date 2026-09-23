@@ -188,11 +188,13 @@ INSERT OR IGNORE INTO settings (key, value) VALUES ('current_campaign', 'initial
 -- ---------------------------------------------------------------------------
 -- students: who is doing the outreach. Real accounts, because a send is
 -- attributed to a person and that attribution ends up on the company record and
--- in the log -- it should not be something anyone can casually claim.
+-- in the log -- the password is what stops someone else sending under it later.
 --
--- The FIRST account created becomes an admin (see auth.needsBootstrap). Only an
--- admin can create further accounts or reset a password, so there is no
--- self-signup on an app that reaches real sponsors.
+-- Sign-up is open: anyone who can reach /signup creates a working student
+-- account, so the loopback bind is what limits who gets one. `role` is the
+-- exception -- the sign-up form always writes 'student', and only an existing
+-- admin can grant admin. The FIRST account is an admin however it was created
+-- (see auth.needsBootstrap), because there is nobody to promote it otherwise.
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS students (
   id            INTEGER PRIMARY KEY,
@@ -206,6 +208,11 @@ CREATE TABLE IF NOT EXISTS students (
   -- Deactivating keeps the person's history and tags intact while ending their
   -- access. Deleting an account that has sends against it is refused.
   active        INTEGER NOT NULL DEFAULT 1,
+  -- NULL means the account is a REQUEST, not an account: it was created at
+  -- /signup and cannot sign in until an admin approves it. An admin creating
+  -- someone directly, and the very first account, are approved on the spot.
+  approved_at   TEXT,
+  approved_by   INTEGER REFERENCES students(id),
   created_at    TEXT NOT NULL DEFAULT (datetime('now')),
   last_login_at TEXT
 );

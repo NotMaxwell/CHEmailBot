@@ -1,7 +1,7 @@
 // Central config. Everything reads from here, never from process.env directly,
 // so the guardrails below are impossible to bypass by accident.
 import { existsSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 /** Project root, from this file's location -- never process.cwd(). */
 export const ROOT = dirname(import.meta.dir);
@@ -28,6 +28,9 @@ export const VERSION: string =
 
 const env = (k: string, fallback = "") => process.env[k] ?? fallback;
 
+/** Set by Render for every web service, e.g. "https://chemailbot.onrender.com". */
+const RENDER_URL = env("RENDER_EXTERNAL_URL");
+
 export const config = {
   port: Number(env("PORT", "3000")),
   /** Loopback by default. There is no login: binding to every interface put
@@ -38,11 +41,32 @@ export const config = {
   gmail: {
     clientId: env("GMAIL_CLIENT_ID"),
     clientSecret: env("GMAIL_CLIENT_SECRET"),
-    redirectUri: env("GMAIL_REDIRECT_URI", "http://localhost:3000/oauth/callback"),
+    /**
+     * Where Google sends the browser back. Must match a redirect URI on the
+     * OAuth client character for character. Render publishes the service's own
+     * public URL as RENDER_EXTERNAL_URL, so a deploy there derives this itself
+     * and there is one less value to paste in two places and get wrong.
+     */
+    redirectUri: env("GMAIL_REDIRECT_URI", RENDER_URL
+      ? `${RENDER_URL.replace(/\/$/, "")}/oauth/callback`
+      : "http://localhost:3000/oauth/callback"),
     sender: env("GMAIL_SENDER"),
-    // Inside data/ so it survives a container rebuild along with the database.
-    tokenPath: join(ROOT, env("GMAIL_TOKEN_PATH", "data/.gmail-token.json")),
+    // Beside the database by default, so it survives a container rebuild along
+    // with it. resolve(), not join(): a host running this off a mounted disk
+    // gives an ABSOLUTE path, and join() would have pasted it onto ROOT.
+    tokenPath: resolve(ROOT, env("GMAIL_TOKEN_PATH", "data/.gmail-token.json")),
   },
+
+  /**
+   * Shared code required to create an account, or "" for open sign-up.
+   *
+   * Blank is the original behaviour and the right one on the loopback bind or a
+   * home LAN, where reaching the app already means you are on the team's
+   * network. Set it the moment the app is reachable from the open internet:
+   * without it, whoever finds the URL gets an account, the whole sponsor list,
+   * and a send button pointed at the team's Gmail.
+   */
+  signupCode: env("SIGNUP_CODE"),
 
   send: {
     /** Daily caps by day-of-campaign. Past the end, the last value repeats. */

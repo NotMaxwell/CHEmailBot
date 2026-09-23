@@ -1,0 +1,55 @@
+# CHEmailBot on a Raspberry Pi, reachable from the house LAN.
+#
+# This is a STANDALONE compose file, not an override of the one in the repo
+# root -- run it with `docker compose -f deploy/pi/compose.yml ...`. Compose
+# merges `ports` by appending rather than replacing, so layering this over the
+# root file would try to bind both 127.0.0.1:3000 and 0.0.0.0:3000 and fail.
+#
+# Paths are relative to THIS file, so the command above works from any cwd.
+
+services:
+  chemailbot:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    image: chemailbot:pi
+    container_name: chemailbot
+    # Comes back after a crash, a Docker restart, and -- with docker.service
+    # enabled, which setup.sh does -- a power cut.
+    restart: unless-stopped
+
+    ports:
+      # The whole point of the Pi: every laptop in the house can reach it.
+      # What keeps this off the internet is the router (no port forward) and
+      # the ufw rule setup.sh installs, which only admits the LAN subnet.
+      # Read deploy/pi/README.md#the-one-rule before changing this line.
+      - "0.0.0.0:3000:3000"
+
+    env_file: ../../.env
+    environment:
+      # Overrides .env: inside the container it must listen on all interfaces,
+      # or the published port above reaches nothing.
+      HOST: "0.0.0.0"
+      PORT: "3000"
+
+    volumes:
+      # Outside the repo, so `git pull` and a rebuild cannot touch the
+      # database, the backups, or the Gmail refresh token. DB_PATH is left at
+      # its default (data/chembot.db), which lands inside this mount.
+      - /var/lib/chembot:/app/data
+
+    healthcheck:
+      # /login is the one page that answers 200 without a session.
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/login"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+    logging:
+      # An SD card is a small, slow disk. Uncapped JSON logs have filled one
+      # before and taken the database down with it.
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

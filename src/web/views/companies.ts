@@ -92,7 +92,17 @@ ${rows.map((c) => `<tr>
         : `<span class="mut">${c.email_count ? c.email_count + " candidates" : "none found"}</span>`}</td>
   <td>${c.template_name ? esc(c.template_name) : '<span class="mut">—</span>'}</td>
   <td>${statusPill(c)}</td>
-  <td><a href="/company/${c.id}">Review →</a></td>
+  <td style="white-space:nowrap">
+    <a href="/company/${c.id}">Review →</a>
+    <form method="post" action="/company/${c.id}/delete" class="inline"
+          style="margin-left:.6rem"
+          onsubmit="return confirm('Delete this company from the queue? Its addresses, tags and any message still waiting to send go with it. The next Chamber scrape will find it again — Reject is what keeps it out for good.')">
+      <input type="hidden" name="filter" value="${esc(filter)}">
+      <button ${c.logged_sends
+                 ? "disabled title='Already contacted — kept for the record. Reject it instead.'"
+                 : "title='Delete this company and everything found for it'"}>×</button>
+    </form>
+  </td>
 </tr>`).join("")}
 </tbody></table></div>
 ${rows.length ? "" : `<p class="mut">Nothing here yet. Run the Chamber scrape above.</p>`}`;
@@ -229,6 +239,10 @@ ${preview ? `<div class="card">
     <form method="post" action="/company/${c.id}/queue" class="inline">
       <button class="primary" ${blockers.length ? "disabled" : ""}>Queue this send</button>
     </form>
+    ${contacted?.status === "queued" ? `<form method="post" action="/company/${c.id}/cancel" class="inline"
+      onsubmit="return confirm('Take this message back out of the queue? It will not be sent, and this company becomes contactable again in this campaign.')">
+      <button title="Removes the pending message so the next Send skips it">
+        Cancel queued send</button></form>` : ""}
     ${!contacted ? `<form method="post" action="/company/${c.id}/form-sent" class="inline">
       <button title="For outreach you submitted by hand through their contact form">
         Mark contacted via their form</button></form>` : ""}

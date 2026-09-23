@@ -1,4 +1,4 @@
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { getCookie, setCookie, deleteCookie } from "hono/cookie";
 import { csrf } from "hono/csrf";
 import { secureHeaders } from "hono/secure-headers";
@@ -8,7 +8,8 @@ import { queuePage, companyPage } from "./views/companies.ts";
 import { historyPage, tagSection } from "./views/history.ts";
 import { campaignsPage } from "./views/campaigns.ts";
 import { suppressionsPage } from "./views/suppressions.ts";
-import { loginPage, bootstrapPage, accountsPage } from "./views/accounts.ts";
+import { loginPage, bootstrapPage, signupPage, signupRequestedPage, requestsPage,
+         accountsPage } from "./views/accounts.ts";
 import * as auth from "../auth.ts";
 import type { Student } from "../auth.ts";
 import * as repo from "../repo.ts";
@@ -17,24 +18,39 @@ import { db, currentCampaign, switchCampaign, companySuppression,
 import { config } from "../config.ts";
 import { syncAll } from "../scrape/chamber.ts";
 import { discoverAll, etaSeconds, type DiscoverProgress } from "../scrape/discover.ts";
-import { render, contextFor, footer, senderNameFor } from "../mail/render.ts";
+import { render, contextFor, footer, senderNameFor, displayNameFor } from "../mail/render.ts";
 import { enqueue, drain, recordFormSend, blockersFor, peekBudget,
-         priorContactWarning } from "../mail/queue.ts";
+         priorContactWarning, cancelQueued } from "../mail/queue.ts";
 import { authUrl, exchangeCode, isAuthorized } from "../mail/gmail.ts";
 
 export const routes = new Hono<{ Variables: { student: Student } }>();
 
-// Every state-changing action is a form POST to localhost. Without an origin
-// check, ANY web page you visit could submit those forms -- start scrapes, mark
-// companies contacted, or drain the send queue. Browsers attach Origin and
-// Sec-Fetch-Site to form posts; csrf() rejects the ones that are not ours.
-routes.use(csrf());
+// Every state-changing action is a form POST. Without an origin check, ANY web
+// page you visit could submit those forms -- start scrapes, mark companies
+// contacted, or drain the send queue. Browsers attach Origin and Sec-Fetch-Site
+// to form posts; csrf() rejects the ones that are not ours.
+//
+// The origins are compared by HOST rather than in full, because behind a
+// TLS-terminating proxy (Render, or a reverse proxy at home) the browser sends
+// "Origin: https://host" while the request arriving here is plain http on the
+// inside -- and the default whole-origin comparison rejects every form POST on
+// the browsers that do not send Sec-Fetch-Site. The host still has to match,
+// which is the part that actually distinguishes our pages from someone else's.
+routes.use(csrf({
+  origin: (origin, c) => {
+    try { return new URL(origin).host === new URL(c.req.url).host; }
+    catch { return false; }          // not a URL at all
+  },
+}));
 // Refuses cross-origin framing (a framed page could trick a click on "Drain
 // queue") and sets nosniff / referrer-policy.
 routes.use(secureHeaders());
 
+/** The only paths reachable without an account: the two that hand one out. */
+const OPEN_PATHS = new Set(["/login", "/signup"]);
+
 /**
- * Everything except the sign-in page requires an account.
+ * Everything except sign-in and sign-up requires an account.
  *
  * This sits AFTER csrf() and secureHeaders() so an unauthenticated request is
  * still origin-checked, and before every route, so adding a route cannot
@@ -42,7 +58,7 @@ routes.use(secureHeaders());
  */
 routes.use("*", async (c, next) => {
   const path = new URL(c.req.url).pathname;
-  if (path === "/login") return next();
+  if (OPEN_PATHS.has(path)) return next();
 
   const student = auth.studentForToken(getCookie(c, auth.SESSION_COOKIE));
   if (!student) {
@@ -54,6 +70,18 @@ routes.use("*", async (c, next) => {
   c.set("student", student);
   await next();
 });
+
+/**
+ * What the header needs about the signed-in person. The pending count is only
+ * looked up for admins -- nobody else can act on it, and it would be a query
+ * on every page render for nothing.
+ */
+const nav = (c: Context<{ Variables: { student: Student } }>) => {
+  const student = c.get("student");
+  return student.role === "admin"
+    ? { ...student, pending: auth.pendingCount() }
+    : student;
+};
 
 /** Routes that change accounts are admin-only. */
 const requireAdmin = (c: { get: (k: "student") => Student }): void => {
@@ -108,9 +136,19 @@ function summarize(result: unknown): string {
 
 const int = (v: unknown) => Number.parseInt(String(v ?? ""), 10);
 
-/** Surfaces a thrown message back into the UI as a banner. */
+/** Surfaces a thrown message back into the UI as a banner. The separator is
+ *  chosen, not assumed: some back paths already carry a query of their own. */
 const fail = (path: string, e: unknown) =>
-  `${path}?err=${encodeURIComponent(e instanceof Error ? e.message : String(e))}`;
+  `${path}${path.includes("?") ? "&" : "?"}err=` +
+  encodeURIComponent(e instanceof Error ? e.message : String(e));
+
+/** Like act(), but the action names what it did, so the page can say so. */
+function actSync(back: string, fn: () => string): string {
+  try {
+    const ok = fn();
+    return `${back}${back.includes("?") ? "&" : "?"}ok=${encodeURIComponent(ok)}`;
+  } catch (e) { return fail(back, e); }
+}
 
 /** Runs an action and redirects, turning any thrown error into a banner. */
 async function act(back: string, fn: () => unknown | Promise<unknown>): Promise<string> {
@@ -119,11 +157,46 @@ async function act(back: string, fn: () => unknown | Promise<unknown>): Promise<
 
 // --- accounts ---------------------------------------------------------------
 
+/** True when the BROWSER reached us over TLS, even if the proxy in front of us
+ *  then spoke plain http to this process. */
+const overHttps = (c: Context): boolean =>
+  (c.req.header("x-forwarded-proto") ?? "").split(",")[0]!.trim() === "https" ||
+  new URL(c.req.url).protocol === "https:";
+
+/** Opens the session cookie for a token. One definition, so a signed-up
+ *  session is scoped exactly like a signed-in one. */
+const openSession = (c: Context, token: string): void =>
+  setCookie(c, auth.SESSION_COOKIE, token, {
+    httpOnly: true, sameSite: "Lax", path: "/", maxAge: auth.SESSION_MAX_AGE,
+    // Conditional, not always on: a Secure cookie is DROPPED over plain http,
+    // so hard-coding it would make sign-in impossible on a LAN address or on
+    // localhost -- while leaving it off over TLS would leak the session to a
+    // single downgraded request.
+    secure: overHttps(c),
+  });
+
+/**
+ * Refuses the wrong shared code, when one is configured.
+ *
+ * Guards both doors that hand out an account -- /signup and the bootstrap form
+ * -- because on a publicly reachable deploy the bootstrap window (no accounts
+ * yet) is exactly when a stranger would get the admin one.
+ */
+function assertSignupCode(value: string): void {
+  if (!config.signupCode) return;                       // open sign-up
+  if (value.trim() !== config.signupCode) {
+    throw new Error("That sign-up code is not right. Ask whoever runs this for it.");
+  }
+}
+
+/** Whether the account forms must ask for the shared code. */
+const codeRequired = (): boolean => config.signupCode !== "";
+
 routes.get("/login", (c) => {
   if (auth.studentForToken(getCookie(c, auth.SESSION_COOKIE))) return c.redirect("/");
   const err = c.req.query("err") ?? null;
   return c.html(auth.needsBootstrap()
-    ? bootstrapPage(err)
+    ? bootstrapPage(err, codeRequired())
     : loginPage(err, c.req.query("next") ?? null));
 });
 
@@ -134,21 +207,63 @@ routes.post("/login", async (c) => {
 
   try {
     if (b["bootstrap"] === "1") {
+      assertSignupCode(String(b["code"] ?? ""));
       await auth.bootstrapAdmin(String(b["name"] ?? ""), username, password);
     }
   } catch (e) { return c.redirect(fail("/login", e)); }
 
   const session = await auth.login(username, password);
-  if (!session) {
-    // One message for both causes: naming which was wrong tells an outsider
-    // which usernames are real.
-    return c.redirect(fail("/login", new Error("That username and password do not match.")));
+  if (!session.ok) {
+    // The message is chosen in auth.ts: vague for a bad credential, specific
+    // for a waiting or deactivated account -- which only its owner can reach.
+    return c.redirect(fail("/login", new Error(auth.loginMessage(session.reason))));
   }
-  setCookie(c, auth.SESSION_COOKIE, session.token, {
-    httpOnly: true, sameSite: "Lax", path: "/", maxAge: auth.SESSION_MAX_AGE,
-  });
+  openSession(c, session.token);
   const next = String(b["next"] ?? "/");
   return c.redirect(next.startsWith("/") && !next.startsWith("//") ? next : "/");
+});
+
+// --- sign-up ----------------------------------------------------------------
+
+routes.get("/signup", (c) => {
+  if (auth.studentForToken(getCookie(c, auth.SESSION_COOKIE))) return c.redirect("/");
+  const requested = c.req.query("requested");
+  if (requested) return c.html(signupRequestedPage(requested));
+  // With an empty table this form would hand out admin without saying so. The
+  // bootstrap page on /login is the one that explains that, so defer to it.
+  if (auth.needsBootstrap()) return c.redirect("/login");
+  return c.html(signupPage(c.req.query("err") ?? null, {
+    name: c.req.query("name") ?? "",
+    username: c.req.query("username") ?? "",
+  }, codeRequired()));
+});
+
+/** Files a request. It deliberately does NOT sign them in: there is nothing to
+ *  sign in to until an admin accepts it. */
+routes.post("/signup", async (c) => {
+  const b = await c.req.parseBody();
+  const name = String(b["name"] ?? "");
+  const username = String(b["username"] ?? "");
+  const password = String(b["password"] ?? "");
+
+  try {
+    assertSignupCode(String(b["code"] ?? ""));
+    await auth.signUp(name, username, password);
+  } catch (e) {
+    // Hand back what they typed so only the password has to be retyped.
+    return c.redirect("/signup?" + new URLSearchParams({
+      err: e instanceof Error ? e.message : String(e), name, username,
+    }));
+  }
+
+  // The very first account is the exception -- it is created outright as the
+  // admin, because there is nobody to approve it -- so sign that one in.
+  const session = await auth.login(username, password);
+  if (session.ok) {
+    openSession(c, session.token);
+    return c.redirect("/");
+  }
+  return c.redirect(`/signup?requested=${encodeURIComponent(name)}`);
 });
 
 routes.post("/logout", (c) => {
@@ -160,8 +275,9 @@ routes.post("/logout", (c) => {
 routes.get("/accounts", (c) =>
   c.html(layout("Accounts",
     accountsPage(auth.listStudents(), c.get("student"),
-                 c.req.query("err") ?? null, c.req.query("ok") ?? null),
-    repo.stats(), { student: c.get("student") })));
+                 c.req.query("err") ?? null, c.req.query("ok") ?? null,
+                 auth.pendingCount()),
+    repo.stats(), { student: nav(c) })));
 
 routes.post("/accounts", async (c) => {
   const b = await c.req.parseBody();
@@ -169,7 +285,50 @@ routes.post("/accounts", async (c) => {
     requireAdmin(c);
     await auth.createStudent(String(b["name"] ?? ""), String(b["username"] ?? ""),
                              String(b["password"] ?? ""),
-                             b["role"] === "admin" ? "admin" : "student");
+                             b["role"] === "admin" ? "admin" : "student",
+                             c.get("student").id);
+  }));
+});
+
+// --- sign-up requests -------------------------------------------------------
+
+/** The admin's approval page. Everything it shows is the decision itself: who
+ *  asked, and what a sponsor will see on the mail they send. */
+routes.get("/requests", (c) => {
+  // A redirect rather than requireAdmin's throw: a student following a stale
+  // link has done nothing wrong, and a 500 page in the error log is not the
+  // way to say "not for you".
+  if (c.get("student").role !== "admin") {
+    return c.redirect(fail("/accounts", new Error("Only an admin can review sign-ups.")));
+  }
+  const rows = auth.pendingRequests().map((student) => ({
+    student,
+    // Rendered the same way a real send renders it, so "Approve" is not a
+    // guess about what the From line will say.
+    signature: displayNameFor({ sender_name: null }, student.name),
+  }));
+  return c.html(layout("Sign-ups waiting",
+    requestsPage(rows, c.req.query("err") ?? null, c.req.query("ok") ?? null),
+    repo.stats(), { student: nav(c) }));
+});
+
+routes.post("/requests/:id/approve", (c) => {
+  const id = int(c.req.param("id"));
+  return c.redirect(actSync("/requests", () => {
+    requireAdmin(c);
+    const who = auth.getStudent(id);
+    auth.approveStudent(id, c.get("student").id);
+    return `${who?.name ?? "That account"} can sign in now.`;
+  }));
+});
+
+routes.post("/requests/:id/decline", (c) => {
+  const id = int(c.req.param("id"));
+  return c.redirect(actSync("/requests", () => {
+    requireAdmin(c);
+    const who = auth.getStudent(id);
+    auth.declineStudent(id);
+    return `Declined ${who?.name ?? "that request"}. The username is free again.`;
   }));
 });
 
@@ -244,7 +403,7 @@ routes.get("/", (c) => {
       queued: stats.queued,
       campaign: currentCampaign(),
     }, err, lastJob),
-    stats, { refresh: running !== null && !err, student: c.get("student") }));
+    stats, { refresh: running !== null && !err, student: nav(c) }));
 });
 
 routes.get("/company/:id", (c) => {
@@ -293,7 +452,7 @@ routes.get("/company/:id", (c) => {
                   resolvedTemplate: resolved && {
                     name: resolved.template.name, source: resolved.source } }) +
     tagSection(id, repo.tagsFor(id), repo.listTags()),
-    repo.stats(), { student: c.get("student") }));
+    repo.stats(), { student: nav(c) }));
 });
 
 // --- steps 2-5: the per-company actions -------------------------------------
@@ -352,6 +511,21 @@ routes.post("/company/:id/queue", async (c) => {
   return c.redirect(await act(`/company/${id}`, () => enqueue(id, { id: me.id, name: me.name })));
 });
 
+/** Undoes the above while the message is still waiting to go out. */
+routes.post("/company/:id/cancel", async (c) => {
+  const id = int(c.req.param("id"));
+  return c.redirect(await act(`/company/${id}`, () => cancelQueued(id)));
+});
+
+/** Removes the company from the review queue for good. The filter comes back
+ *  with it so the list does not jump to "All" under the person deleting. */
+routes.post("/company/:id/delete", async (c) => {
+  const id = int(c.req.param("id"));
+  const filter = String((await c.req.parseBody())["filter"] ?? "all");
+  return c.redirect(await act(`/?filter=${encodeURIComponent(filter)}`,
+    () => repo.deleteCompany(id)));
+});
+
 /** Records a contact made by hand through the company's own form, so form
  *  outreach falls under the same dedup guarantee as email. */
 routes.post("/company/:id/form-sent", async (c) => {
@@ -388,7 +562,7 @@ routes.get("/history", (c) => {
       repo.listHistory(tag || undefined, campaign ?? undefined),
       repo.listTags(), repo.listCampaigns(), currentCampaign(),
       tag, campaign, c.req.query("err") ?? null),
-    repo.stats(), { student: c.get("student") }));
+    repo.stats(), { student: nav(c) }));
 });
 
 // Superseded by /campaigns/switch. Kept so a stale open tab's form still works.
@@ -436,7 +610,7 @@ routes.get("/campaigns", (c) => {
     footerPreview: footer().replace(/^\n+---\n/, ""),
     err: c.req.query("err") ?? null,
     notice: c.req.query("ok") ?? null,
-  }), repo.stats(), { student: c.get("student") }));
+  }), repo.stats(), { student: nav(c) }));
 });
 
 routes.post("/campaigns/switch", async (c) => {
@@ -504,7 +678,7 @@ routes.post("/templates/:id/delete", async (c) =>
 
 routes.get("/suppressions", (c) =>
   c.html(layout("Do not contact",
-    suppressionsPage(repo.listSuppressions(), c.req.query("err") ?? null), repo.stats(), { student: c.get("student") })));
+    suppressionsPage(repo.listSuppressions(), c.req.query("err") ?? null), repo.stats(), { student: nav(c) })));
 
 routes.post("/suppressions", async (c) => {
   const b = await c.req.parseBody();
@@ -534,7 +708,7 @@ ${rows.map((r) => `<tr><td>${esc(r.name)}</td><td>${esc(r.email_address)}</td>
   <td class="${r.status === "sent" ? "ok" : r.status === "queued" ? "warn" : "bad"}">${esc(r.status)}
       ${r.error ? `<br><span class="mut">${esc(r.error)}</span>` : ""}</td>
   <td class="mut">${esc(r.sent_at ?? r.queued_at)}</td></tr>`).join("")}
-</tbody></table></div>` : `<p class="mut">Nothing sent yet.</p>`, repo.stats(), { student: c.get("student") }));
+</tbody></table></div>` : `<p class="mut">Nothing sent yet.</p>`, repo.stats(), { student: nav(c) }));
 });
 
 // --- Gmail OAuth bootstrap --------------------------------------------------

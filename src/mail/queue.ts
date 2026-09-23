@@ -161,6 +161,35 @@ export function enqueue(companyId: number, student?: Sender): void {
   }
 }
 
+/**
+ * Takes a still-pending message back out of the queue: the next drain skips
+ * it, and the company is contactable again in this campaign.
+ *
+ * Scoped to the CURRENT campaign, which is the one the company page reports as
+ * "queued" -- cancelling from here must not reach into another campaign's
+ * queue that this page never showed.
+ *
+ * A row a drain has already CLAIMED (`attempted_at` set) is refused rather
+ * than deleted. It may already have reached Gmail, and deleting it would throw
+ * away the only trace of that, which is the one thing this tool must never do.
+ * recoverInterrupted() resolves those into 'failed' ten minutes on, and a
+ * failed row falls out of the dedup index so it can be queued again.
+ */
+export function cancelQueued(companyId: number): void {
+  const campaign = currentCampaign();
+  const row = db.query<{ id: number; attempted_at: string | null }, [number, string]>(
+    `SELECT id, attempted_at FROM sends
+      WHERE company_id = ? AND campaign = ? AND status = 'queued'`,
+  ).get(companyId, campaign);
+  if (!row) throw new Error(`Nothing is queued for this company in campaign "${campaign}".`);
+  if (row.attempted_at) {
+    throw new Error(
+      "A send for this company is already in flight -- it may have gone out. " +
+      "Check your Gmail Sent folder; the queue resolves it by itself within ten minutes.");
+  }
+  db.query(`DELETE FROM sends WHERE id = ?`).run(row.id);
+}
+
 /** Records an outreach made by hand through a company's own contact form,
  *  so form contacts count against the same dedup guarantee as email. */
 export function recordFormSend(companyId: number, student?: Sender): void {

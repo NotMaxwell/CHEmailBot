@@ -9,8 +9,10 @@ export const layout = (
   title: string, body: string, stats?: Record<string, number>,
   opts: {
     refresh?: boolean;
-    /** Signed-in account, shown in the header so attribution is never a surprise. */
-    student?: { name: string; role: "student" | "admin" } | null;
+    /** Signed-in account, shown in the header so attribution is never a surprise.
+     *  `pending` is the number of sign-ups waiting; shown to admins only,
+     *  because a request nobody notices is a student who cannot work. */
+    student?: { name: string; role: "student" | "admin"; pending?: number } | null;
   } = {},
 ) => `<!doctype html>
 <html lang="en"><head>
@@ -55,7 +57,11 @@ ${opts.refresh ? '<meta http-equiv="refresh" content="4">' : ""}
   label.check{display:flex;gap:.35rem;align-items:center;font-size:14px;color:var(--mut)}
 </style></head><body>
 <nav><a href="/">Review queue</a><a href="/campaigns">Campaigns &amp; templates</a><a href="/history">Past companies</a><a href="/suppressions">Do not contact</a><a href="/log">Send log</a>
-${opts.student ? `<span class="who">Sending as <b>${esc(opts.student.name)}</b>${
+${opts.student ? `<span class="who">${
+  opts.student.role === "admin" && opts.student.pending
+    ? `<a href="/requests"><span class="pill warn">${opts.student.pending} sign-up${
+        opts.student.pending === 1 ? "" : "s"} waiting</span></a> · ` : ""
+}Sending as <b>${esc(opts.student.name)}</b>${
   opts.student.role === "admin" ? ' <span class="pill ok">admin</span>' : ""}
   · <a href="/accounts">Account</a>
   · <form method="post" action="/logout" class="inline"><button class="linkish">Sign out</button></form></span>` : ""}</nav>

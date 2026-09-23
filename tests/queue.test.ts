@@ -10,7 +10,9 @@ process.env.UNSUBSCRIBE_MAILTO = "unsub@test.example";
 process.env.DRY_RUN = "1";
 
 const { db, setSetting } = await import("../src/db.ts");
-const { enqueue, blockersFor, capForDay } = await import("../src/mail/queue.ts");
+const { enqueue, blockersFor, capForDay, cancelQueued } =
+  await import("../src/mail/queue.ts");
+const repo = await import("../src/repo.ts");
 
 // bun test shares one module registry, so src/db.ts is a singleton and this DB
 // is shared with tags.test.ts. Pin our own campaign and ids so the two suites
@@ -82,4 +84,81 @@ test("a failed send falls out of the index so a retry is still allowed", () => {
 test("the warm-up ramp clamps to its last value", () => {
   expect(capForDay(0)).toBe(5);
   expect(capForDay(999)).toBe(50);
+});
+
+// --- taking things back out -------------------------------------------------
+//
+// Own id range: company 1 above is left mid-workflow by the tests before this,
+// and the shared in-memory DB means disturbing it would break them by order.
+
+/** A company cleared through every gate, queued, and ready to be cancelled. */
+function queuedCompany(id: number): void {
+  db.query(
+    `INSERT INTO companies (id, chamber_slug, name, name_key, website, city, state,
+                            review_status, template_id)
+     VALUES (?, ?, ?, ?, 'https://cancel.example', 'Huntsville', 'AL', 'approved', 1)`,
+  ).run(id, `cancel-co-${id}`, `Cancel Co ${id}`, `cancel co ${id}`);
+  db.query(
+    `INSERT INTO emails (company_id, address, source, confidence, is_primary, verified)
+     VALUES (?, ?, 'mailto', 1.0, 1, 1)`,
+  ).run(id, `hi@cancel${id}.example`);
+  enqueue(id);
+}
+
+const liveSends = (id: number) =>
+  db.query<{ n: number }, [number]>(
+    `SELECT COUNT(*) n FROM sends WHERE company_id = ? AND status = 'queued'`,
+  ).get(id)!.n;
+
+test("cancelling a queued send frees the company to be queued again", () => {
+  queuedCompany(1100);
+  expect(liveSends(1100)).toBe(1);
+
+  cancelQueued(1100);
+  expect(liveSends(1100)).toBe(0);
+  expect(blockersFor(1100)).toEqual([]);      // no longer "already queued or sent"
+  expect(() => enqueue(1100)).not.toThrow();  // and the dedup index agrees
+});
+
+test("cancelling refuses a send a drain has already claimed", () => {
+  queuedCompany(1101);
+  db.query(`UPDATE sends SET attempted_at = datetime('now') WHERE company_id = 1101`).run();
+
+  expect(() => cancelQueued(1101)).toThrow(/already in flight/i);
+  expect(liveSends(1101)).toBe(1);            // the only trace of it is still there
+});
+
+test("cancelling says so when there is nothing queued", () => {
+  expect(() => cancelQueued(1102)).toThrow(/nothing is queued/i);
+});
+
+test("deleting a company takes its addresses and pending send with it", () => {
+  queuedCompany(1103);
+  repo.deleteCompany(1103);
+
+  expect(repo.getCompany(1103)).toBeNull();
+  expect(liveSends(1103)).toBe(0);            // cascade, not an orphan
+  expect(db.query<{ n: number }, [number]>(
+    `SELECT COUNT(*) n FROM emails WHERE company_id = ?`).get(1103)!.n).toBe(0);
+});
+
+test("deleting a contacted company is refused so the send log survives", () => {
+  queuedCompany(1104);
+  db.query(`UPDATE sends SET status='sent', sent_at=datetime('now') WHERE company_id=1104`).run();
+
+  expect(() => repo.deleteCompany(1104)).toThrow(/kept for the record/i);
+  expect(repo.getCompany(1104)).not.toBeNull();
+  expect(db.query<{ n: number }, [number]>(
+    `SELECT COUNT(*) n FROM sends WHERE company_id = ? AND status='sent'`).get(1104)!.n).toBe(1);
+});
+
+test("a send claimed mid-drain also blocks the delete -- it may have gone out", () => {
+  queuedCompany(1105);
+  db.query(`UPDATE sends SET attempted_at = datetime('now') WHERE company_id = 1105`).run();
+
+  expect(() => repo.deleteCompany(1105)).toThrow(/kept for the record/i);
+});
+
+test("deleting a company that does not exist says so", () => {
+  expect(() => repo.deleteCompany(1106)).toThrow(/not found/i);
 });

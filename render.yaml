@@ -1,0 +1,90 @@
+# Render blueprint: the whole service, defined here rather than clicked together.
+#
+#   Render dashboard -> New -> Blueprint -> pick this repo -> Apply.
+#
+# Everything marked `sync: false` is asked for at that point and never lives in
+# git. Everything else is set for you. See deploy/render/README.md, and read
+# deploy/pi/README.md#the-one-rule first -- a Render URL is public, and this app
+# was written for a private network.
+
+services:
+  - type: web
+    name: chemailbot
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    region: oregon
+    # A persistent disk requires a paid instance type, and this service cannot
+    # run without one: the database, the Gmail refresh token, and the backups
+    # all live on it. Free instances also spin down, losing in-flight scrapes.
+    plan: starter
+    # /login is the only page that answers 200 without a session; "/" redirects
+    # to it, and Render would read the 302 as unhealthy.
+    healthCheckPath: /login
+
+    disk:
+      name: chembot-data
+      # NOT /app/data. A Render disk hides whatever the image already has at
+      # its mount path, and the image ships data/schema.sql there -- mounting
+      # over it would take the schema away and the app would not start.
+      mountPath: /var/data
+      sizeGB: 1
+
+    envVars:
+      # --- fixed by the deployment ---------------------------------------
+      - key: HOST
+        value: 0.0.0.0        # inside the container; Render's proxy is the edge
+      - key: PORT
+        value: 3000
+      - key: DB_PATH
+        value: /var/data/chembot.db
+      - key: GMAIL_TOKEN_PATH
+        value: /var/data/.gmail-token.json
+
+      # GMAIL_REDIRECT_URI is deliberately absent: config.ts derives it from
+      # RENDER_EXTERNAL_URL, which Render sets to this service's public URL.
+      # Set it explicitly only if you put a custom domain in front.
+
+      # --- second lock on a public URL -----------------------------------
+      # Sign-up is admin-approved everywhere, so a stranger who finds this URL
+      # can file a request and nothing more. This code is the layer in front:
+      # it keeps the requests page free of noise, and covers what approval
+      # cannot -- the window before anyone has claimed the FIRST admin account,
+      # which by definition nobody can approve. Render generates it; read it
+      # under Environment in the dashboard and give it to the team, or replace
+      # it with a phrase they can remember.
+      - key: SIGNUP_CODE
+        generateValue: true
+
+      # --- sending guardrails --------------------------------------------
+      # Stays 1 until you have sent one real message to yourself and read it.
+      - key: DRY_RUN
+        value: 1
+      - key: SEND_RAMP
+        value: 5,10,15,20,30,40,50
+      - key: SEND_INTERVAL_SECONDS
+        value: 180
+
+      # --- scraper politeness --------------------------------------------
+      - key: SCRAPE_DELAY_MS
+        value: 2000
+      - key: SCRAPE_TIMEOUT_MS
+        value: 30000
+
+      # --- you are asked for these on Apply -------------------------------
+      # Required in every message by CAN-SPAM; sending refuses without them.
+      - key: SENDER_NAME
+        sync: false
+      - key: SENDER_ORG
+        sync: false
+      - key: SENDER_POSTAL_ADDRESS
+        sync: false
+      # Gmail OAuth "Web application" client.
+      - key: GMAIL_CLIENT_ID
+        sync: false
+      - key: GMAIL_CLIENT_SECRET
+        sync: false
+      - key: GMAIL_SENDER
+        sync: false
+      # For `bun run test:self` -- your own address, on a DIFFERENT provider.
+      - key: TEST_EMAIL
+        sync: false

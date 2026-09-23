@@ -1,5 +1,87 @@
 # Changelog
 
+## [1.6.0] — 2026-09-23
+
+### Added
+- **Companies can be deleted from the review queue.** The `×` on a queue row
+  removes the company outright, taking its discovered addresses, its Chamber
+  categories, its tags and any message still waiting to send with it. A company
+  that has already been **contacted** cannot be deleted — `sends` cascades from
+  `companies`, so it would take the send log with it; those are refused with a
+  pointer to **Reject**, which is also the option that survives a re-scrape
+  (a deleted company has no tombstone, so the next Chamber sync finds it again).
+- **A queued send can be taken back.** **Cancel queued send** on the company
+  page deletes the pending row, so the next **Send** skips it and the company is
+  contactable again in this campaign. A send a drain has already claimed is
+  refused instead of deleted: it may be in Gmail already, and the queue resolves
+  it into `failed` by itself ten minutes on.
+- **A sign-up page at `/signup`, and an approval page at `/requests`.** New
+  students fill in name, username and password; that files a **request**, not
+  an account. An admin accepts it at `/requests` before it can sign in. The
+  approval page shows the one thing the decision is about — the signature a
+  sponsor will read on that person's emails, rendered exactly as a real send
+  renders it — with Approve and Decline. Declining deletes the request and
+  frees the username, so an honest mistake can simply ask again; the statement
+  is scoped `WHERE approved_at IS NULL`, so whatever id reaches it, it cannot
+  touch an account someone already accepted.
+- **A waiting-requests count in the nav, for admins.** A request nobody
+  notices is a student who cannot work.
+- **`students.approved_at` / `approved_by`.** NULL means "still a request".
+  Existing databases are backfilled on the single migration pass that adds the
+  column — without that, an upgrade would lock the whole team out and leave
+  nobody able to approve anyone. The session check reads it on every request,
+  not only at sign-in.
+
+- **Two deployment recipes, both Docker.** `deploy/pi/` puts the app on a
+  Raspberry Pi on the house LAN — `setup.sh` installs Docker, collects the
+  secrets into `.env`, moves the data directory to `/var/lib/chembot` where a
+  `git pull` cannot reach it, opens port 3000 to the LAN subnet and nothing
+  else, and schedules a nightly `VACUUM INTO` backup. `render.yaml` describes
+  the same image as a Render web service with a persistent disk. Each has a
+  guide covering the router, the Gmail OAuth round trip, and backups.
+- **`SIGNUP_CODE`.** Blank asks nothing extra, which is right on the loopback
+  bind and on a LAN, where approval is already the gate. Set it and both doors
+  — `/signup` and the first-admin bootstrap — ask for it. On a public URL it
+  keeps the requests page free of noise and covers what approval cannot: the
+  window before anyone has claimed the first admin account, which by definition
+  nobody can approve.
+
+### Fixed
+- **Form posts no longer 403 behind a TLS-terminating proxy.** The CSRF check
+  compared whole origins, so a browser sending `Origin: https://host` to a
+  proxy that forwards plain http inside was rejected on every browser that does
+  not send `Sec-Fetch-Site`. Origins are now compared by **host**, which is the
+  part that distinguishes our pages from someone else's.
+- **The session cookie is `Secure` over HTTPS** and, deliberately, not over
+  plain http — a hard-coded `Secure` flag would make sign-in impossible on a
+  LAN address, where the browser drops the cookie.
+- **An absolute `GMAIL_TOKEN_PATH` is honoured.** It was `join`ed onto the
+  project root, so `/var/data/.gmail-token.json` became
+  `/app/var/data/.gmail-token.json` — a deployment with a mounted disk lost its
+  Gmail token on every restart.
+- **Backups follow the database.** They were written to `<project>/data/backups`
+  regardless of `DB_PATH`, so a deployment using a mounted disk put its backups
+  on the container filesystem, discarded on the next deploy.
+
+### Changed
+- **Students can ask for an account; only an admin grants one.** Creating it on
+  `/accounts` was the only way in. It is now one of two, and stays the way to
+  create an account on someone's behalf or to hand out **admin** — a request is
+  always a `student`, so the role cannot be self-assigned. The first account
+  remains an admin however it is made, and is approved on the spot because
+  there is nobody to approve it.
+- **The attribution guarantee holds on a shared network.** Two things cannot be
+  claimed by typing them: the admin role, and access itself. Reaching the port
+  gets a stranger a request that sits there — not the sponsor list, and not a
+  send button. That is what makes the deployments above defensible; the loopback
+  bind is no longer the only thing holding it up.
+- **`auth.login()` returns why it failed**, not just `null`. "credentials"
+  stays deliberately vague — naming which of the username and password was
+  wrong says which usernames exist. "pending" and "deactivated" are specific
+  and safely so: reaching them means the password was right, so the person
+  being told is the account's owner, who needs to know what to do next rather
+  than be left retyping.
+
 ## [1.5.1] — 2026-09-22
 
 ### Changed

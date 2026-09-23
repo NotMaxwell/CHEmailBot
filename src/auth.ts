@@ -1,9 +1,14 @@
 // Accounts and sessions.
 //
 // This app reaches real sponsors, and every send is attributed to a person --
-// on the company's tags and in the send log. That attribution is only worth
-// anything if it cannot be casually claimed, hence real passwords rather than a
-// "who's at the keyboard" dropdown.
+// on the company's tags and in the send log. Accounts are self-service, so the
+// name on a send is whatever its owner typed at /signup; what the password buys
+// is that nobody else can then send under it, which a "who's at the keyboard"
+// dropdown would not give.
+//
+// Sign-up is a REQUEST, not an account: an admin approves it at /requests
+// before it can sign in. That is what lets the app sit somewhere more than one
+// person can reach without the name on a message becoming a free-text field.
 //
 // It is NOT a substitute for the loopback bind. Anyone with a shell on this
 // machine can read data/chembot.db and .env directly; the login stops a student
@@ -17,9 +22,17 @@ export interface Student {
   username: string;
   role: "student" | "admin";
   active: 0 | 1;
+  /** Null while the account is still a request nobody has accepted. */
+  approved_at: string | null;
+  approved_by: number | null;
   created_at: string;
   last_login_at: string | null;
 }
+
+/** The columns every read of a student wants. One list, so adding a field
+ *  cannot leave one query behind returning a half-built Student. */
+const COLUMNS =
+  `id, name, username, role, active, approved_at, approved_by, created_at, last_login_at`;
 
 /** Sessions last this long; a school laptop should not stay logged in forever. */
 const SESSION_DAYS = 14;
@@ -33,15 +46,56 @@ const sha256 = (s: string): string =>
 export const needsBootstrap = (): boolean =>
   (db.query<{ n: number }, []>(`SELECT COUNT(*) n FROM students`).get()?.n ?? 0) === 0;
 
+/** Real accounts. Requests waiting on an admin are NOT accounts yet and are
+ *  listed by pendingRequests() instead, so the two never blur together. */
 export const listStudents = (): Student[] =>
   db.query<Student, []>(
-    `SELECT id, name, username, role, active, created_at, last_login_at
-     FROM students ORDER BY active DESC, name COLLATE NOCASE`).all();
+    `SELECT ${COLUMNS} FROM students
+     WHERE approved_at IS NOT NULL
+     ORDER BY active DESC, name COLLATE NOCASE`).all();
 
+/** Any row, approved or not -- approving one has to be able to read it first. */
 export const getStudent = (id: number): Student | null =>
   db.query<Student, [number]>(
-    `SELECT id, name, username, role, active, created_at, last_login_at
-     FROM students WHERE id = ?`).get(id) ?? null;
+    `SELECT ${COLUMNS} FROM students WHERE id = ?`).get(id) ?? null;
+
+// --- approval ---------------------------------------------------------------
+
+/** Sign-ups waiting on an admin, oldest first -- the order to work through. */
+export const pendingRequests = (): Student[] =>
+  db.query<Student, []>(
+    `SELECT ${COLUMNS} FROM students
+     WHERE approved_at IS NULL ORDER BY created_at`).all();
+
+/** For the nav badge: an admin should not have to go looking. */
+export const pendingCount = (): number =>
+  db.query<{ n: number }, []>(
+    `SELECT COUNT(*) n FROM students WHERE approved_at IS NULL`).get()?.n ?? 0;
+
+/** Lets a request in, recording who opened the door. */
+export function approveStudent(id: number, approvedBy: number): void {
+  const target = getStudent(id);
+  if (!target) throw new Error("No such account.");
+  if (target.approved_at) throw new Error(`${target.name} is already approved.`);
+  db.query(`UPDATE students SET approved_at = datetime('now'), approved_by = ?
+            WHERE id = ? AND approved_at IS NULL`).run(approvedBy, id);
+}
+
+/**
+ * Turns a request away. The row is deleted rather than flagged, so the username
+ * frees up and an honest mistake can simply sign up again.
+ *
+ * The `approved_at IS NULL` in the WHERE clause is the safety: whatever id is
+ * passed, this statement cannot touch an account that someone already accepted.
+ */
+export function declineStudent(id: number): void {
+  const target = getStudent(id);
+  if (!target) throw new Error("No such account.");
+  if (target.approved_at) {
+    throw new Error(`${target.name} is an approved account. Deactivate it instead.`);
+  }
+  db.query(`DELETE FROM students WHERE id = ? AND approved_at IS NULL`).run(id);
+}
 
 function validate(name: string, username: string, password: string): void {
   if (!name.trim()) throw new Error("Name cannot be empty.");
@@ -55,28 +109,63 @@ function validate(name: string, username: string, password: string): void {
   if (password.length > 200) throw new Error("Password is too long (200 characters max).");
 }
 
-export async function createStudent(
+/**
+ * Writes the row. `approvedBy` decides what kind of row it is:
+ *
+ *   a number  an admin made this account, and that act IS the approval
+ *   null      the system made it -- the bootstrap admin, approved by nobody
+ *   "pending" a request from /signup, which cannot sign in until accepted
+ */
+async function insertStudent(
   name: string, username: string, password: string,
-  role: "student" | "admin" = "student",
+  role: "student" | "admin", approvedBy: number | null | "pending",
 ): Promise<number> {
   validate(name, username, password);
   const hash = await Bun.password.hash(password);   // argon2id
+  const pending = approvedBy === "pending";
   try {
     return Number(db.query(
-      `INSERT INTO students (name, username, password_hash, role) VALUES (?, ?, ?, ?)`,
-    ).run(name.trim(), username.trim().toLowerCase(), hash, role).lastInsertRowid);
+      `INSERT INTO students (name, username, password_hash, role, approved_at, approved_by)
+       VALUES (?, ?, ?, ?, ${pending ? "NULL" : "datetime('now')"}, ?)`,
+    ).run(name.trim(), username.trim().toLowerCase(), hash, role,
+          pending ? null : approvedBy).lastInsertRowid);
   } catch (e) {
     if (String(e).includes("UNIQUE")) throw new Error(`Username "${username.trim()}" is taken.`);
     throw e;
   }
 }
 
+/** An admin creating someone directly, from /accounts. Approved on the spot:
+ *  an admin typing the account into existence is the approval. */
+export const createStudent = (
+  name: string, username: string, password: string,
+  role: "student" | "admin" = "student", approvedBy: number | null = null,
+): Promise<number> => insertStudent(name, username, password, role, approvedBy);
+
 /** The first account, created from the login page, is always an admin -- there
  *  would otherwise be nobody able to create the second. */
 export const bootstrapAdmin = (name: string, username: string, password: string) => {
-  if (!needsBootstrap()) throw new Error("An account already exists. Ask an admin to create yours.");
-  return createStudent(name, username, password, "admin");
+  if (!needsBootstrap()) throw new Error("An account already exists. Sign up or sign in.");
+  return insertStudent(name, username, password, "admin", null);
 };
+
+/**
+ * Self-service sign-up, from /signup. This does NOT hand out an account -- it
+ * files a request an admin has to accept at /requests.
+ *
+ * Two things cannot be claimed by typing them. Admin is one: a request is
+ * always a student, and the role is granted afterwards or not at all. Access is
+ * the other: until someone who already has an account says yes, the row exists
+ * but cannot sign in. Together they are what make the name on a sponsor email
+ * mean something even when more than one person can reach the app.
+ *
+ * The first account is the exception, and has to be: with an empty table there
+ * is nobody to approve anything, so it is created outright as the admin.
+ */
+export const signUp = (name: string, username: string, password: string) =>
+  needsBootstrap()
+    ? insertStudent(name, username, password, "admin", null)
+    : insertStudent(name, username, password, "student", "pending");
 
 export async function setPassword(id: number, password: string): Promise<void> {
   if (password.length < 10) throw new Error("Password must be at least 10 characters.");
@@ -136,24 +225,43 @@ const dummyHash = (): Promise<string> =>
   (dummyHashPromise ??= Bun.password.hash(crypto.randomUUID()));
 
 /**
+ * Why a sign-in did not open a session.
+ *
+ * "credentials" is deliberately vague -- naming which of the username and the
+ * password was wrong tells an outsider which usernames are real. The other two
+ * are specific, and safely so: they are only ever reached by someone who has
+ * just proved they know the password, which is to say by the account's owner,
+ * who needs to be told what to do next rather than left retyping.
+ */
+export type LoginFailure = "credentials" | "pending" | "deactivated";
+
+export type LoginResult =
+  | { ok: true; token: string; student: Student }
+  | { ok: false; reason: LoginFailure };
+
+/**
  * Verifies a password and opens a session. Returns the raw token for the
  * cookie; only its hash is stored.
  *
  * An unknown username still runs a hash comparison, so the response time does
  * not reveal which usernames exist.
  */
-export async function login(username: string, password: string): Promise<
-  { token: string; student: Student } | null
-> {
-  const row = db.query<{ id: number; password_hash: string; active: number }, [string]>(
-    `SELECT id, password_hash, active FROM students WHERE username = ?`,
+export async function login(username: string, password: string): Promise<LoginResult> {
+  const row = db.query<
+    { id: number; password_hash: string; active: number; approved_at: string | null }, [string]
+  >(
+    `SELECT id, password_hash, active, approved_at FROM students WHERE username = ?`,
   ).get(username.trim().toLowerCase());
 
   const hash = row?.password_hash ?? (await dummyHash());
   let ok = false;
   try { ok = await Bun.password.verify(password, hash); } catch { ok = false; }
 
-  if (!row || !ok || !row.active) return null;
+  if (!row || !ok) return { ok: false, reason: "credentials" };
+  // Checked only AFTER the password, so these answers leak nothing: reaching
+  // them means you are the owner of the account you are asking about.
+  if (!row.approved_at) return { ok: false, reason: "pending" };
+  if (!row.active) return { ok: false, reason: "deactivated" };
 
   const token = crypto.randomUUID() + crypto.randomUUID();
   const expires = new Date(Date.now() + SESSION_DAYS * 86_400_000).toISOString();
@@ -161,8 +269,15 @@ export async function login(username: string, password: string): Promise<
     .run(sha256(token), row.id, expires);
   db.query(`UPDATE students SET last_login_at = datetime('now') WHERE id = ?`).run(row.id);
 
-  return { token, student: getStudent(row.id)! };
+  return { ok: true, token, student: getStudent(row.id)! };
 }
+
+/** What the sign-in page says for each failure. */
+export const loginMessage = (reason: LoginFailure): string => ({
+  credentials: "That username and password do not match.",
+  pending: "Your sign-up is waiting for an admin to approve it. You will be able to sign in once they have.",
+  deactivated: "That account has been deactivated. Ask an admin to turn it back on.",
+}[reason]);
 
 /** The signed-in account for a cookie token, or null. Expired rows are swept. */
 export function studentForToken(token: string | undefined): Student | null {
@@ -173,7 +288,8 @@ export function studentForToken(token: string | undefined): Student | null {
   ).get(sha256(token));
   if (!row) return null;
   const student = getStudent(row.student_id);
-  return student?.active ? student : null;
+  if (!student || !student.active || !student.approved_at) return null;
+  return student;
 }
 
 export function logout(token: string | undefined): void {

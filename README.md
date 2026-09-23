@@ -33,7 +33,10 @@ no address          →  its own contact form     bun run form:assist <id>
 Then, per company: **verify it** as a target → **verify the address** →
 **choose which address** → **choose a template** → **queue it** (or record a
 form contact). The preview shows exactly what will be sent, and the send button
-lists whatever is still missing.
+lists whatever is still missing. A queued message can be taken back with
+**Cancel queued send**, and a company you should never have scraped can be
+deleted outright with the `×` on its queue row — though the next Chamber sync
+will find it again, so **Reject** is what keeps one out for good.
 
 Set the campaign and its default template once on **Campaigns & templates**, and
 every company inherits that template — so the per-company step 4 is only for the
@@ -65,22 +68,42 @@ member.
   the ready lists.
 - **Nothing sends by accident.** `DRY_RUN` is on by default, and sending refuses
   to start without the CAN-SPAM fields.
+- **The send log outlives everything else.** A company that has been contacted
+  cannot be deleted, the same way a campaign or template on a logged message
+  cannot — what was transmitted stays on the record.
 
 Campaigns scope the dedup guarantee, so starting a new one (on **Campaigns &
 templates**) is how you deliberately re-contact partners about a new event.
 
 ## Accounts
 
-Every page except sign-in requires an account, and **every send is attributed to
-the person who made it** — their name signs the email and sets the From display
-name, the send row records them, and the company picks up a `Student: <name>`
-tag so the history page's tag filter answers "what did Alice send?".
+Every page except sign-in and sign-up requires an account, and **every send is
+attributed to the person who made it** — their name signs the email and sets the
+From display name, the send row records them, and the company picks up a
+`Student: <name>` tag so the history page's tag filter answers "what did Alice
+send?".
 
-The first account created is an admin; only an admin can add accounts or reset a
-password, so there is no self-signup on a tool that reaches real sponsors.
-Passwords are argon2id (`Bun.password`), sessions are server-side rows keyed by
-a SHA-256 of the cookie token, and changing a password or deactivating an
-account ends its sessions immediately.
+New students **ask for an account at `/signup`**, and that files a request
+rather than creating one: until an admin accepts it on **`/requests`**, the row
+exists but cannot sign in. The approval page shows the one thing the decision
+is about — the signature a sponsor will read on that person's emails, rendered
+exactly as a real send renders it — and offers Approve or Decline. Declining
+deletes the request and frees the username, so an honest mistake can just ask
+again. A count of waiting requests sits in the nav for admins, because a request
+nobody notices is a student who cannot work.
+
+An admin can also create an account outright on `/accounts`; making it *is* the
+approval. That page is likewise the only way to hand out **admin** — a request
+is always a student, so the role cannot be self-assigned. The first account,
+however it is created, is an admin and is approved on the spot, because there is
+nobody else to approve it.
+
+Two things therefore cannot be claimed by typing them: the admin role, and
+access itself. That is what lets the app sit somewhere more than one person can
+reach while the name on a sponsor email still means something. Passwords are
+argon2id (`Bun.password`), sessions are server-side rows keyed by a SHA-256 of
+the cookie token, and changing a password, deactivating an account, or
+un-approving one ends its sessions immediately.
 
 ## Security model
 
@@ -90,8 +113,21 @@ and OAuth `state` is verified.
 
 The login is **attribution, not a perimeter**: anyone with a shell on this
 machine can read `data/chembot.db` and `.env` directly. It stops a student
-filing work under someone else's name; it does not make the app safe to put on
-a network.
+filing work under someone else's name; it does not make the app safe to hand to
+the internet.
+
+Sign-up being admin-approved is what makes reaching the port different from
+getting in. A stranger who finds the app can file a request and wait; they
+cannot read the sponsor list or send anything. Put it on a network and that is
+the gate doing the work, so:
+
+- **On a LAN** (the [Pi deployment](deploy/pi/README.md)), the router is still
+  the outer perimeter. Never forward a port to it.
+- **On a public URL** (the [Render deployment](deploy/render/README.md)), also
+  set `SIGNUP_CODE`. Approval already stops a stranger getting in; the code
+  stops them filling the requests page with noise, and — the part approval
+  cannot cover — stops someone claiming the **first** admin account in the
+  window before you claim it yourself.
 
 ## Data
 
@@ -120,6 +156,19 @@ bun run docker:down
   `0.0.0.0`, which is required and safe *because* of that publish line.
 - **Form assist is not containerized.** It drives a headed browser you click
   Submit in, so run it on the host: `bun run form:assist <id>`.
+
+## Deploying it somewhere the team can reach
+
+Running it on your laptop means it is up only while your laptop is. Two
+recipes, both Docker, both with the setup written down rather than clicked:
+
+| | |
+|---|---|
+| **[Raspberry Pi](deploy/pi/README.md)** — recommended | A Pi on the house LAN, reachable by every laptop in it and by nothing on the internet. `deploy/pi/setup.sh` does the whole install. Free to run, and the sponsor list stays on hardware you own. Covers the router, remote access, and backups. |
+| **[Render](deploy/render/README.md)** | `render.yaml` describes the service; Render asks for the secrets and builds it. Public URL, about $8/month, no hardware. Set `SIGNUP_CODE` — it is on the open internet. |
+
+Either way `DRY_RUN` stays at `1` until you have sent one real message to
+yourself and read what arrived.
 
 ## Commands
 

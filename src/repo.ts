@@ -15,6 +15,9 @@ export interface CompanyRow extends Company {
   template_name: string | null;
   /** Every Chamber category the company is listed under, comma-joined. */
   categories: string | null;
+  /** Messages on the record across ALL campaigns, which is what makes a delete
+   *  refuse. A message still sitting in the queue is not one of them. */
+  logged_sends: number;
 }
 
 export interface CampaignRow {
@@ -56,7 +59,11 @@ export function listCompanies(filter = "all", campaign = currentCampaign()): Com
            s.channel  AS send_channel,
            t.name     AS template_name,
            (SELECT GROUP_CONCAT(category, ', ') FROM company_categories
-             WHERE company_id = c.id) AS categories
+             WHERE company_id = c.id) AS categories,
+           -- Deliberately NOT scoped to the campaign: deleting the company
+           -- would take the whole send log with it, from every campaign.
+           (SELECT COUNT(*) FROM sends x WHERE x.company_id = c.id
+             AND NOT (x.status = 'queued' AND x.attempted_at IS NULL)) AS logged_sends
     FROM companies c
     LEFT JOIN emails e   ON e.company_id=c.id AND e.is_primary=1
     LEFT JOIN sends  s   ON s.company_id=c.id AND s.status IN ('queued','sent')
@@ -178,6 +185,38 @@ export function clearCompanyTemplates(campaign = currentCampaign()): number {
 /** Step 2: verify (or reject) the company as an outreach target. */
 export function setReview(id: number, status: "new" | "approved" | "rejected") {
   db.query(`UPDATE companies SET review_status=? WHERE id=?`).run(status, id);
+}
+
+/**
+ * Drops a company off the review queue entirely, taking its addresses,
+ * categories and tags with it through the schema's ON DELETE CASCADE.
+ *
+ * A company that has been CONTACTED is kept, for the same reason a campaign or
+ * a template on a logged message is kept: `sends` cascades from `companies`,
+ * so deleting the row would quietly erase the proof of what was transmitted.
+ * `setReview(id, 'rejected')` is the way to retire one of those.
+ *
+ * A message still WAITING in the queue is not proof of anything, so it is
+ * cancelled along with the company -- but one a drain has already claimed
+ * (`attempted_at` set) may be in Gmail already, and counts as logged.
+ *
+ * This does not keep the company away: it has no tombstone, so the next
+ * Chamber sync re-inserts it as new. Reject, or "Do not contact", is what
+ * survives a re-scrape.
+ */
+export function deleteCompany(id: number): void {
+  const company = getCompany(id);
+  if (!company) throw new Error("Company not found.");
+  const logged = db.query<{ n: number }, [number]>(
+    `SELECT COUNT(*) n FROM sends
+      WHERE company_id = ? AND NOT (status = 'queued' AND attempted_at IS NULL)`,
+  ).get(id)?.n ?? 0;
+  if (logged) {
+    throw new Error(
+      `"${company.name}" is on ${logged} logged message(s) and is kept for the record. ` +
+      `Reject it instead, which keeps it out of the ready list.`);
+  }
+  db.query(`DELETE FROM companies WHERE id = ?`).run(id);
 }
 
 /** Step 3: mark a discovered address as human-confirmed. */
